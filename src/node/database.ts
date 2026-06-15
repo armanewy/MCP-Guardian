@@ -115,7 +115,10 @@ function coerceAuditDetailLevel(value: string | undefined): AuditDetailLevel {
   return value === 'redacted-preview' ? 'redacted-preview' : 'minimal';
 }
 
-export function summarizeToolResponse(response: unknown): Record<string, unknown> {
+export function summarizeToolResponse(
+  response: unknown,
+  detailLevel: AuditDetailLevel = 'minimal',
+): Record<string, unknown> {
   const redacted = redactDeep(response) as any;
   const content = Array.isArray(redacted?.content) ? redacted.content : [];
   const serialized = JSON.stringify(redacted);
@@ -124,7 +127,7 @@ export function summarizeToolResponse(response: unknown): Record<string, unknown
     contentTypes: [...new Set(content.map((item: any) => String(item?.type ?? 'unknown')))],
     isError: Boolean(redacted?.isError),
     byteLengthEstimate: Buffer.byteLength(serialized, 'utf8'),
-    preview: serialized.slice(0, RESPONSE_PREVIEW_LIMIT),
+    preview: detailLevel === 'redacted-preview' ? serialized.slice(0, RESPONSE_PREVIEW_LIMIT) : null,
   };
 }
 
@@ -520,8 +523,10 @@ export class GuardianDatabase {
     error?: string;
     sourcePath?: string;
   }): void {
+    const detailLevel = this.getAuditDetailLevel();
     const responseSummary =
-      input.responseSummary ?? (input.response === undefined ? undefined : summarizeToolResponse(input.response));
+      input.responseSummary ??
+      (input.response === undefined ? undefined : summarizeToolResponse(input.response, detailLevel));
 
     this.db
       .prepare(
@@ -553,7 +558,7 @@ export class GuardianDatabase {
         requestJson:
           input.request === undefined
             ? null
-            : this.getAuditDetailLevel() === 'redacted-preview'
+            : detailLevel === 'redacted-preview'
               ? cappedRedactedJson(input.request)
               : summarizeRequestMinimal(input.request),
         responseSummaryJson: responseSummary === undefined ? null : cappedRedactedJson(responseSummary, 1_000),

@@ -48,6 +48,8 @@ The SQLite database stores:
 - audit events with minimal request summaries by default;
 - response summaries, not full tool responses.
 
+Minimal audit mode stores argument keys and byte-length estimates only. It does not store argument values or response text previews. `redacted-preview` is an opt-in debugging mode and should be treated as sensitive because it may store short redacted request and response previews.
+
 ## Manual Restore
 
 If the app cannot start, restore manually:
@@ -80,10 +82,10 @@ Use `npm run dev` to launch the Electron app during development.
 
 ## Dogfood Harness
 
-Run the fake dangerous MCP server harness before testing real servers:
+Run the fake dangerous MCP server harness before testing real servers. Passing this harness is required before real server dogfooding:
 
 ```bash
 npm run dogfood:fake-server
 ```
 
-The harness creates a temporary MCP config, protects a fake server, verifies blocked calls are not forwarded, checks upstream env isolation, exercises approval timeout denial, verifies audit logs do not persist private values, and restores the original config exactly.
+The harness creates a temporary MCP config, protects a fake server, verifies blocked calls are not forwarded, checks default sensitive tools require approval, exercises an approved call that forwards upstream, checks upstream env isolation, verifies minimal audit logs do not persist private request or response values, and restores the original config exactly.

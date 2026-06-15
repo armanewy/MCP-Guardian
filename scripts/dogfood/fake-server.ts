@@ -27,6 +27,10 @@ function textFromResult(result: any): string {
   return String(result?.content?.[0]?.text ?? '');
 }
 
+function auditLog() {
+  return db.listAuditLogs(200);
+}
+
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-guardian-dogfood-'));
 const db = new GuardianDatabase(path.join(tempRoot, '.mcp-guardian', 'mcp-guardian.sqlite'));
 const configPath = path.join(tempRoot, 'mcp.json');
@@ -34,6 +38,9 @@ const callLogPath = path.join(tempRoot, 'fake-calls.log');
 const serverName = 'fake-dangerous';
 const configRootKey = 'mcpServers';
 const fakeServerPath = repoPath('scripts', 'dogfood', 'fake-mcp-server.ts');
+const sentinel = 'PRIVATE-SHOULD-NOT-PERSIST';
+const privateRequestValue = `${sentinel}-REQUEST`;
+const privateResponseValue = `${sentinel}-RESPONSE`;
 const originalConfig: McpServerDefinition = {
   command: process.execPath,
   args: [tsxCli(), fakeServerPath],
@@ -66,6 +73,8 @@ try {
   });
 
   db.setPolicy(serverId, serverName, 'delete_file', 'block');
+  db.setPolicy(serverId, serverName, 'echo_large_private_text', 'allow');
+  db.setPolicy(serverId, serverName, 'leak_env', 'allow');
   const protectedConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')).mcpServers[serverName];
   const client = new Client({ name: 'mcp-guardian-dogfood-client', version: '0.1.0' });
   await client.connect(
@@ -90,8 +99,10 @@ try {
   const leakedEnv = textFromResult(envResult);
   assert(!leakedEnv.includes('guardian-process-secret'), 'Guardian process env secret leaked upstream');
 
-  const privateText = `PRIVATE-${'x'.repeat(1200)}-END`;
-  await client.callTool({ name: 'echo_large_private_text', arguments: { text: privateText } });
+  await client.callTool({
+    name: 'echo_large_private_text',
+    arguments: { text: `${privateRequestValue}-${privateResponseValue}-${'x'.repeat(1200)}` },
+  });
   await client.close();
 
   const calls = fs.existsSync(callLogPath) ? fs.readFileSync(callLogPath, 'utf8') : '';
@@ -116,8 +127,65 @@ try {
   assert((timedOut as any).isError === true, 'timed-out approval should deny with tool error');
   assert(!timeoutForwarded, 'timed-out approval forwarded upstream');
 
-  const auditJson = JSON.stringify(db.listAuditLogs(100));
-  assert(!auditJson.includes(privateText), 'private request/response value persisted in audit logs');
+  const defaultSensitiveTools = ['write_file', 'run_shell_command', 'send_message'];
+  for (const toolName of defaultSensitiveTools) {
+    let forwarded = false;
+    const defaultBlocked = await guardedCallTool({
+      db,
+      serverId,
+      serverName,
+      request: {
+        method: 'tools/call',
+        params: {
+          name: toolName,
+          arguments: { text: `default-deny-${toolName}`, command: 'echo default-deny' },
+        },
+      },
+      approvalTimeoutMs: 5,
+      callUpstream: async () => {
+        forwarded = true;
+        return { content: [{ type: 'text', text: 'should not happen' }] };
+      },
+    });
+    assert((defaultBlocked as any).isError === true, `${toolName} should deny by default without approval`);
+    assert(!forwarded, `${toolName} forwarded without approval`);
+    assert(
+      auditLog().some((entry) => entry.toolName === toolName && entry.decision === 'timeout_denied'),
+      `${toolName} timeout_denied audit decision missing`,
+    );
+  }
+
+  let approvalForwarded = false;
+  const approvalPromise = guardedCallTool({
+    db,
+    serverId,
+    serverName,
+    request: {
+      method: 'tools/call',
+      params: { name: 'write_file', arguments: { text: 'approved dogfood write' } },
+    },
+    approvalTimeoutMs: 5_000,
+    callUpstream: async () => {
+      approvalForwarded = true;
+      return { content: [{ type: 'text', text: 'approved write forwarded' }] };
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const pendingApproval = db.listPendingApprovals().find((approval) => approval.toolName === 'write_file');
+  assert(pendingApproval, 'approval request was not created');
+  db.resolveApproval(pendingApproval.id, 'approved', 'dogfood approval');
+  const approved = await approvalPromise;
+  assert((approved as any).isError !== true, 'approved call should not return an error result');
+  assert(approvalForwarded, 'approved call was not forwarded upstream');
+  assert(
+    auditLog().some((entry) => entry.toolName === 'write_file' && entry.decision === 'asked_allowed'),
+    'asked_allowed audit decision missing',
+  );
+
+  const auditJson = JSON.stringify(auditLog());
+  assert(!auditJson.includes(sentinel), 'sentinel persisted in audit logs');
+  assert(!auditJson.includes(privateRequestValue), 'private request value persisted in audit logs');
+  assert(!auditJson.includes(privateResponseValue), 'private response prefix persisted in audit logs');
 
   rewriteServerMode({
     sourcePath: configPath,
@@ -146,6 +214,8 @@ try {
           'blocked call not forwarded',
           'upstream env restricted',
           'approval timeout denied',
+          'default sensitive tools require approval',
+          'approval allow forwards upstream',
           'audit omits private values',
           'restore exact',
         ],

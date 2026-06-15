@@ -37,5 +37,8 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Dogfood fake server
+        run: npm run dogfood:fake-server
+
       - name: Build
         run: npm run build

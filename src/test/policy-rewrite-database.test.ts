@@ -293,9 +293,38 @@ describe('sqlite audit logging', () => {
 
     const [entry] = db.listAuditLogs();
     expect(entry.responseSummaryJson).toBeTruthy();
+    const summary = JSON.parse(entry.responseSummaryJson ?? '{}');
+    expect(summary.preview).toBeNull();
+    expect(summary.contentItemCount).toBe(1);
+    expect(summary.contentTypes).toEqual(['text']);
+    expect(summary.isError).toBe(false);
     expect(entry.responseSummaryJson).toContain('byteLengthEstimate');
+    expect(entry.responseSummaryJson).not.toContain('START-');
     expect(entry.responseSummaryJson).not.toContain('-SECRET-END');
     expect(entry).not.toHaveProperty('responseJson');
+    db.close();
+  });
+
+  it('stores response previews only when redacted-preview is enabled', () => {
+    const dir = tempDir();
+    const db = new GuardianDatabase(path.join(dir, 'guardian.sqlite'));
+    db.setAuditDetailLevel('redacted-preview');
+    db.logAudit({
+      serverId: 'server-a',
+      serverName: 'fs',
+      toolName: 'read_file',
+      action: 'tools/call',
+      decision: 'allowed',
+      risk: 'medium',
+      response: {
+        content: [{ type: 'text', text: 'visible debug response' }],
+        isError: false,
+      },
+    });
+
+    const [entry] = db.listAuditLogs();
+    const summary = JSON.parse(entry.responseSummaryJson ?? '{}');
+    expect(summary.preview).toContain('visible debug response');
     db.close();
   });
 });

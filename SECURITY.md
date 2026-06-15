@@ -13,7 +13,7 @@ MCP Guardian is designed for local dogfooding and defense-in-depth around MCP co
 - Protected stdio servers are launched through a local MCP proxy.
 - The proxy lazy-connects upstream servers only on first `tools/list` or `tools/call`.
 - Upstream server environment is restricted to a minimal base env plus the original server config env.
-- Request audit logging defaults to minimal metadata only.
+- Request and response audit logging defaults to minimal metadata only.
 - Tool responses are summarized and never stored in full.
 - Electron renderer uses `nodeIntegration: false`, `contextIsolation: true`, and `sandbox: true`.
 
@@ -28,7 +28,9 @@ MCP Guardian is designed for local dogfooding and defense-in-depth around MCP co
 
 ## Audit Privacy
 
-The default audit detail level is `minimal`. It stores argument keys and byte-length estimates, not argument values. A future UI may expose `redacted-preview` mode for local debugging, but that mode should be treated as more sensitive.
+The default audit detail level is `minimal`. It stores argument keys and byte-length estimates, not argument values. Minimal mode also stores no response text preview; response summaries set `preview: null`.
+
+`redacted-preview` mode is opt-in for local debugging and should be treated as sensitive. It may store short redacted request previews and the first 200 redacted serialized characters of response summaries.
 
 Responses are always summarized with:
 
@@ -36,9 +38,12 @@ Responses are always summarized with:
 - content types;
 - `isError`;
 - byte-length estimate;
-- first 200 redacted serialized characters.
+- `preview: null` in minimal mode;
+- first 200 redacted serialized characters only in `redacted-preview` mode.
 
 Full tool responses are never intentionally stored.
+
+Run `npm run dogfood:fake-server` before pointing Guardian at real MCP servers. The fake server harness verifies default sensitive tools require approval, blocked calls are not forwarded, approved calls do forward, upstream environment handling stays minimal, audit logs omit private values in minimal mode, and restore remains exact.
 
 ## Backup Handling
 
