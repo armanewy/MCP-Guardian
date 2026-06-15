@@ -7,7 +7,13 @@ on:
 
 jobs:
   validate:
-    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04, macos-14]
+        node-version: [22.x]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
@@ -16,7 +22,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 25.4.0
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install

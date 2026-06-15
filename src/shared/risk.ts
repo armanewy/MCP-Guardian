@@ -50,6 +50,8 @@ function levelFromScore(score: number): RiskLevel {
 
 function levelFromFactors(factors: RiskFactor[], score: number): RiskLevel {
   if (factors.some((factor) => factor.level === 'critical')) return 'critical';
+  if (factors.some((factor) => factor.level === 'high')) return 'high';
+  if (factors.some((factor) => factor.level === 'medium')) return levelFromScore(Math.max(score, LEVEL_SCORE.medium));
   return levelFromScore(score);
 }
 

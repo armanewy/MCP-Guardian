@@ -8,6 +8,7 @@ import {
   Gauge,
   Lock,
   RefreshCw,
+  ShieldCheck,
   Server,
   Shield,
   ShieldAlert,
@@ -29,7 +30,7 @@ import type {
 } from '../../shared/types';
 import { evaluatePolicy } from '../../shared/policy';
 
-type ViewKey = 'dashboard' | 'servers' | 'tools' | 'policies' | 'approvals' | 'audit';
+type ViewKey = 'dashboard' | 'servers' | 'tools' | 'policies' | 'approvals' | 'audit' | 'safety';
 
 const riskOrder: Record<RiskLevel, number> = {
   low: 0,
@@ -77,6 +78,33 @@ function sortedServers(snapshot: DashboardSnapshot): ServerSummary[] {
     const riskDelta = riskOrder[right.risk.level] - riskOrder[left.risk.level];
     return riskDelta || left.name.localeCompare(right.name);
   });
+}
+
+function serverRecommendation(server: ServerSummary): string {
+  if (server.transport === 'http') {
+    return 'Scan only. HTTP/SSE protection is not implemented in v0.1.';
+  }
+  if (server.risk.factors.some((factor) => factor.code === 'shell-command' || factor.code === 'command-execution')) {
+    return 'Disable if unknown. Protect only after verifying the server is trusted; startup code is not sandboxed.';
+  }
+  if (server.risk.factors.some((factor) => factor.code === 'package-runner')) {
+    return 'Package runner detected. Protect trusted servers; disable unknown servers until reviewed.';
+  }
+  if (server.risk.level === 'critical' || server.risk.level === 'high') {
+    return 'Protect trusted servers. Disable unknown high-risk servers.';
+  }
+  return 'Monitor or leave active. Protect if you want audit logs and policy enforcement.';
+}
+
+function safetyRows(snapshot: DashboardSnapshot): Array<{ label: string; value: string; state: 'ok' | 'warn' }> {
+  return [
+    { label: 'Backups', value: '0700 dirs and 0600 files where supported', state: 'ok' },
+    { label: 'Renderer sandbox', value: 'enabled', state: 'ok' },
+    { label: 'Audit detail', value: snapshot.auditDetailLevel, state: snapshot.auditDetailLevel === 'minimal' ? 'ok' : 'warn' },
+    { label: 'Upstream environment', value: 'restricted to minimal base env plus explicit server env', state: 'ok' },
+    { label: 'Full responses stored', value: 'no, summaries only', state: 'ok' },
+    { label: 'Known limitation', value: 'not an OS sandbox; startup side effects can still happen', state: 'warn' },
+  ];
 }
 
 function statCounts(snapshot: DashboardSnapshot): Record<RiskLevel, number> {
@@ -129,6 +157,7 @@ function Sidebar({
     { key: 'policies', label: 'Policies', icon: <SlidersHorizontal size={18} /> },
     { key: 'approvals', label: 'Approvals', icon: <ShieldAlert size={18} />, count: pendingCount },
     { key: 'audit', label: 'Audit', icon: <ClipboardList size={18} /> },
+    { key: 'safety', label: 'Safety', icon: <ShieldCheck size={18} /> },
   ];
 
   return (
@@ -200,6 +229,7 @@ function DashboardView({
   const protectedCount = snapshot.servers.filter((server) => server.mode === 'protected').length;
   const disabledCount = snapshot.servers.filter((server) => server.mode === 'disabled').length;
   const recent = snapshot.audits.slice(0, 6);
+  const triageServers = sortedServers(snapshot).filter((server) => server.risk.level === 'critical' || server.risk.level === 'high').slice(0, 5);
 
   return (
     <div className="view-stack">
@@ -227,6 +257,26 @@ function DashboardView({
       </section>
 
       <section className="two-column">
+        <div className="panel">
+          <div className="panel-header">
+            <h3>Recommended First Actions</h3>
+          </div>
+          <div className="row-list">
+            {triageServers.map((server) => (
+              <button className="server-row" type="button" key={server.id} onClick={() => onSelectServer(server.id)}>
+                <div>
+                  <strong>{server.name}</strong>
+                  <span>{serverRecommendation(server)}</span>
+                </div>
+                <div className="row-badges">
+                  <RiskBadge risk={server.risk.level} />
+                </div>
+              </button>
+            ))}
+            {triageServers.length === 0 ? <div className="empty-state">No high-risk servers need immediate action.</div> : null}
+          </div>
+        </div>
+
         <div className="panel">
           <div className="panel-header">
             <h3>Riskiest Servers</h3>
@@ -326,8 +376,9 @@ function ServerDetail({
       <div className="warning-box">
         <AlertTriangle size={18} />
         <span>
-          Protect mode proxies stdio calls and policies. It does not sandbox startup side effects,
-          inspect all network traffic, or contain arbitrary child processes.
+          {serverRecommendation(server)} Protect mode proxies stdio calls and policies. It does not
+          sandbox startup side effects, inspect all network traffic, or contain arbitrary child
+          processes.
         </span>
       </div>
 
@@ -374,6 +425,35 @@ function ServerDetail({
           ))}
         </div>
       </section>
+    </div>
+  );
+}
+
+function SafetyView({ snapshot }: { snapshot: DashboardSnapshot }): ReactElement {
+  return (
+    <div className="view-stack">
+      <div className="panel">
+        <div className="panel-header">
+          <h3>Trust But Verify</h3>
+        </div>
+        <div className="safety-list">
+          {safetyRows(snapshot).map((row) => (
+            <div key={row.label} className="safety-row">
+              <span className={`source-state ${row.state === 'ok' ? 'found' : ''}`}>{row.state}</span>
+              <strong>{row.label}</strong>
+              <span>{row.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="warning-box">
+        <AlertTriangle size={18} />
+        <span>
+          Use local dogfooding with fake or disposable MCP servers first. Do not attach production
+          credentials until CI, audit triage, fake-server E2E, and cross-platform testing remain
+          stable.
+        </span>
+      </div>
     </div>
   );
 }
@@ -786,6 +866,7 @@ export function App(): ReactElement {
           <ApprovalsView approvals={snapshot.pendingApprovals} onResolve={resolveApproval} />
         ) : null}
         {view === 'audit' ? <AuditView snapshot={snapshot} /> : null}
+        {view === 'safety' ? <SafetyView snapshot={snapshot} /> : null}
       </main>
     </div>
   );

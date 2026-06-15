@@ -1,5 +1,7 @@
 # MCP Guardian
 
+[![CI](https://github.com/armanewy/MCP-Guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/armanewy/MCP-Guardian/actions/workflows/ci.yml)
+
 MCP Guardian is a local-first Electron dashboard for inspecting and controlling MCP server access. It scans supported local MCP client configs, classifies server and tool risk, can disable or protect stdio MCP servers, and keeps a local SQLite audit trail.
 
 ## What It Protects
@@ -75,3 +77,13 @@ npm run build
 ```
 
 Use `npm run dev` to launch the Electron app during development.
+
+## Dogfood Harness
+
+Run the fake dangerous MCP server harness before testing real servers:
+
+```bash
+npm run dogfood:fake-server
+```
+
+The harness creates a temporary MCP config, protects a fake server, verifies blocked calls are not forwarded, checks upstream env isolation, exercises approval timeout denial, verifies audit logs do not persist private values, and restores the original config exactly.

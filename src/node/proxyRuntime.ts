@@ -40,6 +40,19 @@ export function buildUpstreamEnv(
   };
 }
 
+function upstreamStartupError(serverName: string, error: unknown): Error {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new Error(
+    [
+      `MCP Guardian could not start upstream MCP server "${serverName}".`,
+      'This server may require additional environment variables.',
+      'Guardian only passes PATH, HOME, USERPROFILE, SystemRoot, TEMP, TMP, TMPDIR, plus env explicitly configured on the MCP server.',
+      'Add required env vars to the MCP server config and rescan.',
+      `Original error: ${detail}`,
+    ].join(' '),
+  );
+}
+
 function loadUpstreamConfig(db: GuardianDatabase, serverId: string, backupId?: string): McpServerDefinition {
   if (backupId) {
     return stripGuardianMetadata(db.readServerConfigFromBackup(backupId));
@@ -206,7 +219,12 @@ export async function runProxyRuntime(options: ProxyRuntimeOptions): Promise<voi
       stderr: 'inherit',
     });
     upstreamClient = new Client({ name: 'mcp-guardian-proxy-client', version: '0.1.0' });
-    await upstreamClient.connect(transport);
+    try {
+      await upstreamClient.connect(transport);
+    } catch (error) {
+      upstreamClient = undefined;
+      throw upstreamStartupError(options.serverName, error);
+    }
     return upstreamClient;
   }
 

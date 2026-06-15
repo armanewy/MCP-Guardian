@@ -111,6 +111,10 @@ describe('risk classifier', () => {
   it('classifies destructive tools as critical', () => {
     expect(classifyTool({ name: 'delete_repository', description: 'Remove repo' }).level).toBe('critical');
   });
+
+  it('does not downgrade single high-risk write factors', () => {
+    expect(classifyTool({ name: 'write_file', inputSchema: { path: 'x', text: 'y' } }).level).toBe('high');
+  });
 });
 
 describe('redaction', () => {

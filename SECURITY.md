@@ -45,3 +45,7 @@ Full tool responses are never intentionally stored.
 Backup files may contain secrets because they preserve MCP configs. Treat `~/.mcp-guardian/backups` as sensitive local data.
 
 Manual restore steps are documented in `README.md`.
+
+## Dependency Audit
+
+Current npm audit triage is tracked in `SECURITY_AUDIT.md`. Do not run `npm audit fix --force` without reviewing runtime impact and Electron/Vite compatibility.
