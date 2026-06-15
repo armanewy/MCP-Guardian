@@ -4,6 +4,7 @@ import {
   CircleSlash,
   ClipboardList,
   Database,
+  Download,
   FileJson,
   FolderOpen,
   Gauge,
@@ -88,20 +89,32 @@ function backupInUse(snapshot: DashboardSnapshot, backupId: string): boolean {
   return snapshot.servers.some((server) => server.guardian?.backupId === backupId);
 }
 
+function backupStatus(snapshot: DashboardSnapshot, backup: BackupRecord): string {
+  if (backupInUse(snapshot, backup.backupId)) return 'in use';
+  if (backup.latestForServer) return 'latest';
+  return 'stale';
+}
+
+function backupIntegrity(backup: BackupRecord): string {
+  if (backup.fileExists === false) return 'missing';
+  if (backup.checksumMatches === false) return 'changed';
+  return 'verified';
+}
+
 function serverRecommendation(server: ServerSummary): string {
   if (server.transport === 'http') {
     return 'Scan only. HTTP/SSE protection is not implemented in v0.1.';
   }
   if (server.risk.factors.some((factor) => factor.code === 'shell-command' || factor.code === 'command-execution')) {
-    return 'Disable if unknown. Protect only after verifying the server is trusted; startup code is not sandboxed.';
+    return 'Disable if unknown. Guard with proxy only after verifying the server is trusted; startup code is not sandboxed.';
   }
   if (server.risk.factors.some((factor) => factor.code === 'package-runner')) {
-    return 'Package runner detected. Protect trusted servers; disable unknown servers until reviewed.';
+    return 'Package runner detected. Guard trusted servers with the proxy; disable unknown servers until reviewed.';
   }
   if (server.risk.level === 'critical' || server.risk.level === 'high') {
-    return 'Protect trusted servers. Disable unknown high-risk servers.';
+    return 'Guard trusted servers with the proxy. Disable unknown high-risk servers.';
   }
-  return 'Monitor or leave active. Protect if you want audit logs and policy enforcement.';
+  return 'Monitor or leave active. Guard with proxy if you want audit logs and policy enforcement.';
 }
 
 function safetyRows(snapshot: DashboardSnapshot): Array<{ label: string; value: string; state: 'ok' | 'warn' }> {
@@ -383,10 +396,10 @@ function ServerDetail({
     return <div className="detail-empty">Select a server to inspect its permissions.</div>;
   }
 
-  const canProtect = server.transport === 'stdio' && server.mode !== 'protected';
+  const canGuard = server.transport === 'stdio' && server.mode !== 'protected';
   const canRestore = server.mode !== 'active';
   const disableBusy = busy === `${server.id}:disabled`;
-  const protectBusy = busy === `${server.id}:protected`;
+  const guardBusy = busy === `${server.id}:protected`;
   const restoreBusy = busy === `${server.id}:active`;
 
   return (
@@ -405,7 +418,7 @@ function ServerDetail({
       <div className="warning-box">
         <AlertTriangle size={18} />
         <span>
-          {serverRecommendation(server)} Protect mode proxies stdio calls and policies. It does not
+          {serverRecommendation(server)} Guard with proxy mode proxies stdio calls and policies. It does not
           sandbox startup side effects, inspect all network traffic, or contain arbitrary child
           processes.
         </span>
@@ -416,9 +429,9 @@ function ServerDetail({
           <CircleSlash size={16} />
           {disableBusy ? 'Disabling' : 'Disable'}
         </button>
-        <button className="primary-button" type="button" onClick={() => onMode(server, 'protected')} disabled={!canProtect || Boolean(busy)}>
+        <button className="primary-button" type="button" onClick={() => onMode(server, 'protected')} disabled={!canGuard || Boolean(busy)}>
           <Lock size={16} />
-          {protectBusy ? 'Protecting' : 'Protect'}
+          {guardBusy ? 'Guarding' : 'Guard with proxy'}
         </button>
         <button className="ghost-button" type="button" onClick={() => onMode(server, 'active')} disabled={!canRestore || Boolean(busy)}>
           <Unlock size={16} />
@@ -793,28 +806,50 @@ function AuditView({ snapshot }: { snapshot: DashboardSnapshot }): ReactElement 
 function BackupsView({
   snapshot,
   onOpenBackupFolder,
+  onExportBackup,
   onDeleteBackup,
+  onDeleteOldBackups,
 }: {
   snapshot: DashboardSnapshot;
   onOpenBackupFolder: () => void;
+  onExportBackup: (backup: BackupRecord) => void;
   onDeleteBackup: (backup: BackupRecord) => void;
+  onDeleteOldBackups: (days: number) => void;
 }): ReactElement {
+  const [oldBackupDays, setOldBackupDays] = useState(30);
+
   return (
     <div className="view-stack">
       <div className="warning-box">
         <AlertTriangle size={18} />
         <span>
-          Backup files preserve MCP configs and may contain secrets. Delete only stale backups you no
-          longer need for restore.
+          Backup files preserve MCP configs and may contain secrets. Export a backup before deleting
+          it if it might be your only manual recovery path.
         </span>
       </div>
       <div className="panel">
         <div className="panel-header">
           <h3>Backup Inventory</h3>
-          <button className="secondary-button" type="button" onClick={onOpenBackupFolder}>
-            <FolderOpen size={16} />
-            Open Folder
-          </button>
+          <div className="backup-actions">
+            <label>
+              Older than
+              <input
+                type="number"
+                min="1"
+                value={oldBackupDays}
+                onChange={(event) => setOldBackupDays(Math.max(1, Number(event.target.value) || 1))}
+              />
+              days
+            </label>
+            <button className="secondary-button" type="button" onClick={() => onDeleteOldBackups(oldBackupDays)}>
+              <Trash2 size={16} />
+              Delete Old
+            </button>
+            <button className="secondary-button" type="button" onClick={onOpenBackupFolder}>
+              <FolderOpen size={16} />
+              Open Folder
+            </button>
+          </div>
         </div>
         <div className="table backup-table">
           <div className="table-row table-head">
@@ -822,19 +857,25 @@ function BackupsView({
             <span>Server</span>
             <span>Source</span>
             <span>Backup</span>
+            <span>Integrity</span>
             <span>Status</span>
             <span></span>
           </div>
           {snapshot.backups.map((backup) => {
-            const inUse = backupInUse(snapshot, backup.backupId);
+            const status = backupStatus(snapshot, backup);
+            const integrity = backupIntegrity(backup);
             return (
               <div className="table-row" key={backup.backupId}>
                 <span>{formatDate(backup.createdAt)}</span>
                 <span>{backup.serverName}</span>
                 <span title={backup.sourcePath}>{backup.sourcePath}</span>
                 <span title={backup.backupPath}>{backup.backupPath}</span>
-                <span className={inUse ? 'source-state found' : 'source-state'}>{inUse ? 'in use' : 'stale'}</span>
-                <span>
+                <span className={integrity === 'verified' ? 'source-state found' : 'source-state'}>{integrity}</span>
+                <span className={status === 'stale' ? 'source-state' : 'source-state found'}>{status}</span>
+                <span className="inline-actions">
+                  <IconButton label="Export backup" onClick={() => onExportBackup(backup)}>
+                    <Download size={16} />
+                  </IconButton>
                   <IconButton label="Delete backup" onClick={() => onDeleteBackup(backup)}>
                     <Trash2 size={16} />
                   </IconButton>
@@ -923,15 +964,42 @@ export function App(): ReactElement {
     }
   };
 
+  const exportBackup = async (backup: BackupRecord): Promise<void> => {
+    const result = await window.guardian.exportBackup({ backupId: backup.backupId });
+    if (result) {
+      setNotice(`Backup exported: ${result}`);
+    }
+  };
+
   const deleteBackup = async (backup: BackupRecord): Promise<void> => {
-    const inUse = snapshot ? backupInUse(snapshot, backup.backupId) : false;
+    const warnings: string[] = [];
+    if (snapshot && backupInUse(snapshot, backup.backupId)) {
+      warnings.push('it is used by a currently protected or disabled server');
+    }
+    if (backup.latestForServer) {
+      warnings.push('it is the latest backup for this server');
+    }
+    if (backup.fileExists === false) {
+      warnings.push('its backup file is missing');
+    } else if (backup.checksumMatches === false) {
+      warnings.push('its checksum does not match the registry');
+    }
     const confirmed =
-      !inUse ||
+      warnings.length === 0 ||
       window.confirm(
-        'This backup is used by a currently protected or disabled server. Delete it only if you have another restore path.',
+        `Delete this backup? ${warnings.join('; ')}. Export it first if it may be your only manual recovery path.`,
       );
     if (!confirmed) return;
-    setSnapshot(await window.guardian.deleteBackup({ backupId: backup.backupId, confirmed: inUse }));
+    setSnapshot(await window.guardian.deleteBackup({ backupId: backup.backupId, confirmed: warnings.length > 0 }));
+  };
+
+  const deleteOldBackups = async (days: number): Promise<void> => {
+    if (!window.confirm(`Delete stale verified backups older than ${days} days? Latest and in-use backups will be skipped.`)) {
+      return;
+    }
+    const response = await window.guardian.deleteOldBackups({ days });
+    setSnapshot(response.snapshot);
+    setNotice(`Deleted ${response.deletedCount} old backups; skipped ${response.skippedCount}.`);
   };
 
   if (!snapshot) {
@@ -985,7 +1053,13 @@ export function App(): ReactElement {
         ) : null}
         {view === 'audit' ? <AuditView snapshot={snapshot} /> : null}
         {view === 'backups' ? (
-          <BackupsView snapshot={snapshot} onOpenBackupFolder={openBackupFolder} onDeleteBackup={deleteBackup} />
+          <BackupsView
+            snapshot={snapshot}
+            onOpenBackupFolder={openBackupFolder}
+            onExportBackup={exportBackup}
+            onDeleteBackup={deleteBackup}
+            onDeleteOldBackups={deleteOldBackups}
+          />
         ) : null}
         {view === 'safety' ? <SafetyView snapshot={snapshot} /> : null}
       </main>

@@ -29,9 +29,12 @@ Use GitHub private vulnerability reporting if it is enabled for the repository. 
 - Config writes use a temp file and rename instead of direct writes to the original path.
 - Backup directories are created with `0700` where supported.
 - Backup files are written with `0600` where supported.
-- Protected stdio servers are launched through a local MCP proxy.
+- Guarded stdio servers are launched through a local MCP proxy.
 - The proxy lazy-connects upstream servers only on first `tools/list` or `tools/call`.
 - Upstream server environment is restricted to a minimal base env plus the original server config env.
+- Custom MCP config files are selected through the native file picker in normal use; renderer-supplied paths are accepted only in smoke/test mode.
+- Backup inventory shows file existence, checksum status, and latest-per-server status.
+- Backup deletion requires explicit confirmation for backups used by guarded/disabled servers, latest-per-server backups, missing files, or checksum mismatches.
 - Request and response audit logging defaults to minimal metadata only.
 - Tool responses are summarized and never stored in full.
 - Electron renderer uses `nodeIntegration: false`, `contextIsolation: true`, and `sandbox: true`.

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/armanewy/MCP-Guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/armanewy/MCP-Guardian/actions/workflows/ci.yml)
 
-MCP Guardian is a local-first Electron dashboard for inspecting and controlling MCP server access. It scans supported local MCP client configs, classifies server and tool risk, can disable or protect stdio MCP servers, and keeps a local SQLite audit trail.
+MCP Guardian is a local-first Electron dashboard for inspecting and controlling MCP server access. It scans supported local MCP client configs, classifies server and tool risk, can disable or guard stdio MCP servers with a proxy, and keeps a local SQLite audit trail.
 
 ## What It Protects
 
@@ -64,7 +64,7 @@ The backup file contains the whole config file as it existed before Guardian rew
 
 ## Emergency Disable Or Restore
 
-To disable a problematic protected server quickly, edit the MCP client config and remove that server entry or point it at the disabled Guardian shim.
+To disable a problematic guarded server quickly, edit the MCP client config and remove that server entry or point it at the disabled Guardian shim.
 
 To restore original behavior, copy the original server config from the registered backup file back into the MCP config. Then restart the MCP client.
 
@@ -82,6 +82,8 @@ npm run smoke:electron
 
 Use `npm run dev` to launch the Electron app during development.
 
+For controlled private-alpha testing, use [PRIVATE_ALPHA.md](PRIVATE_ALPHA.md).
+
 ## Dogfood Harness
 
 Run the fake dangerous MCP server harness before testing real servers. Passing this harness is required before real server dogfooding:
@@ -90,6 +92,6 @@ Run the fake dangerous MCP server harness before testing real servers. Passing t
 npm run dogfood:fake-server
 ```
 
-The harness creates a temporary MCP config, protects a fake server, verifies blocked calls are not forwarded, checks default sensitive tools require approval, exercises an approved call that forwards upstream, checks upstream env isolation, verifies minimal audit logs do not persist private request or response values, and restores the original config exactly.
+The harness creates a temporary MCP config, guards a fake server with the proxy, verifies blocked calls are not forwarded, checks default sensitive tools require approval, exercises an approved call that forwards upstream, checks upstream env isolation, verifies minimal audit logs do not persist private request or response values, and restores the original config exactly.
 
 After `npm run build`, run `npm run dogfood:fake-server:built` to exercise the compiled `out/cli/proxy.js` and `out/cli/disabled.js` runtime. Run `npm run smoke:electron` to launch the built Electron app in smoke-test mode and verify the renderer, snapshot IPC, and Safety screen.

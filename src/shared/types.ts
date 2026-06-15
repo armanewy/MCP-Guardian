@@ -182,4 +182,7 @@ export interface BackupRecord {
   backupPath: string;
   sha256: string;
   createdAt: string;
+  fileExists?: boolean;
+  checksumMatches?: boolean;
+  latestForServer?: boolean;
 }

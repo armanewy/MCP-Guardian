@@ -58,7 +58,7 @@ function metadataFor(input: {
     updatedAt: new Date().toISOString(),
     note:
       input.mode === 'protected'
-        ? 'Protected by MCP Guardian stdio proxy. Startup side effects are not sandboxed.'
+        ? 'Guarded by MCP Guardian stdio proxy. Startup side effects are not sandboxed.'
         : 'Disabled by MCP Guardian. Restore from the app to re-enable the original server.',
   };
 }
@@ -172,7 +172,7 @@ export function rewriteServerMode(input: {
     };
   } else {
     if (!original.config.command) {
-      throw new Error('Protect mode only supports stdio servers with a command in v0.1');
+      throw new Error('Guard with proxy only supports stdio servers with a command in v0.1');
     }
 
     root[input.serverName] = {

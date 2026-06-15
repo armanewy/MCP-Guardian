@@ -248,7 +248,7 @@ export function inferToolsForServer(server: ParsedMcpServer, risk: ServerRiskAss
   }
 
   if (tools.length === 0) {
-    push('unknown_tool_call', 'Actual tools appear after Protect mode observes tools/list');
+    push('unknown_tool_call', 'Actual tools appear after Guard with proxy observes tools/list');
   }
 
   return tools;

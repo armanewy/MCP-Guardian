@@ -135,6 +135,21 @@ function parseJsonArray(value: string | undefined): unknown[] {
   }
 }
 
+function backupIntegrity(backupPath: string, expectedSha256: string): Pick<BackupRecord, 'fileExists' | 'checksumMatches'> {
+  try {
+    const content = fs.readFileSync(backupPath, 'utf8');
+    return {
+      fileExists: true,
+      checksumMatches: sha256Hex(content) === expectedSha256,
+    };
+  } catch {
+    return {
+      fileExists: false,
+      checksumMatches: false,
+    };
+  }
+}
+
 export function summarizeToolResponse(
   response: unknown,
   detailLevel: AuditDetailLevel = 'minimal',
@@ -542,16 +557,23 @@ export class GuardianDatabase {
       )
       .all() as Array<Record<string, string>>;
 
-    return rows.map((row) => ({
-      backupId: row.backup_id,
-      sourcePath: row.source_path,
-      serverId: row.server_id,
-      serverName: row.server_name,
-      configRootKey: row.config_root_key,
-      backupPath: row.backup_path,
-      sha256: row.sha256,
-      createdAt: row.created_at,
-    }));
+    const latestByServer = new Set<string>();
+    return rows.map((row) => {
+      const latestForServer = !latestByServer.has(row.server_id);
+      latestByServer.add(row.server_id);
+      return {
+        backupId: row.backup_id,
+        sourcePath: row.source_path,
+        serverId: row.server_id,
+        serverName: row.server_name,
+        configRootKey: row.config_root_key,
+        backupPath: row.backup_path,
+        sha256: row.sha256,
+        createdAt: row.created_at,
+        latestForServer,
+        ...backupIntegrity(row.backup_path, row.sha256),
+      };
+    });
   }
 
   deleteBackup(backupId: string): void {

@@ -8,8 +8,13 @@ const api = {
   removeCustomSource: (input: { id: string }): Promise<DashboardSnapshot> =>
     ipcRenderer.invoke('guardian:remove-custom-source', input),
   openBackupFolder: (): Promise<string> => ipcRenderer.invoke('guardian:open-backup-folder'),
+  exportBackup: (input: { backupId: string }): Promise<string> => ipcRenderer.invoke('guardian:export-backup', input),
   deleteBackup: (input: { backupId: string; confirmed?: boolean }): Promise<DashboardSnapshot> =>
     ipcRenderer.invoke('guardian:delete-backup', input),
+  deleteOldBackups: (input: {
+    days: number;
+  }): Promise<{ snapshot: DashboardSnapshot; deletedCount: number; skippedCount: number }> =>
+    ipcRenderer.invoke('guardian:delete-old-backups', input),
   setPolicy: (input: {
     serverId: string;
     toolName: string;

@@ -46,5 +46,9 @@ jobs:
       - name: Dogfood built fake server
         run: npm run dogfood:fake-server:built
 
+      - name: Install Linux smoke dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
       - name: Electron smoke
         run: npm run smoke:electron

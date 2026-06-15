@@ -270,6 +270,41 @@ describe('database inventory settings', () => {
     expect(fixture.db.listBackups().map((backup) => backup.backupId)).not.toContain(result.backupId);
     fixture.db.close();
   });
+
+  it('reports backup integrity and latest-per-server status', () => {
+    const fixture = setupRewriteFixture();
+    const first = rewriteServerMode({
+      sourcePath: fixture.configPath,
+      serverId: fixture.serverId,
+      serverName: 'filesystem',
+      configRootKey: 'mcpServers',
+      mode: 'disabled',
+      expectedOriginalFingerprint: fingerprintServerConfig(fixture.original),
+      launch: fixture.launch,
+      db: fixture.db,
+    });
+    const current = JSON.parse(fs.readFileSync(fixture.configPath, 'utf8'));
+    const secondOriginal = fixture.db.readServerConfigFromBackup(current.mcpServers.filesystem.mcpGuardian.backupId);
+    const second = rewriteServerMode({
+      sourcePath: fixture.configPath,
+      serverId: fixture.serverId,
+      serverName: 'filesystem',
+      configRootKey: 'mcpServers',
+      mode: 'active',
+      expectedOriginalFingerprint: fingerprintServerConfig(secondOriginal),
+      launch: fixture.launch,
+      db: fixture.db,
+    });
+
+    fs.appendFileSync(first.backupPath, '\n');
+    const backups = fixture.db.listBackups();
+    const firstBackup = backups.find((backup) => backup.backupId === first.backupId);
+    const secondBackup = backups.find((backup) => backup.backupId === second.backupId);
+
+    expect(firstBackup).toMatchObject({ fileExists: true, checksumMatches: false, latestForServer: false });
+    expect(secondBackup).toMatchObject({ fileExists: true, checksumMatches: true, latestForServer: true });
+    fixture.db.close();
+  });
 });
 
 describe('sqlite audit logging', () => {

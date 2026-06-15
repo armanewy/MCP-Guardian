@@ -148,7 +148,9 @@ nav {
 }
 
 .topbar-actions,
-.action-row {
+.action-row,
+.backup-actions,
+.inline-actions {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -156,6 +158,28 @@ nav {
 
 .action-row.end {
   justify-content: flex-end;
+}
+
+.backup-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.backup-actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.backup-actions input {
+  width: 72px;
+}
+
+.inline-actions {
+  gap: 6px;
 }
 
 .db-path {
@@ -583,7 +607,7 @@ nav {
 }
 
 .backup-table .table-row {
-  grid-template-columns: 120px 160px minmax(220px, 1fr) minmax(220px, 1fr) 90px 46px;
+  grid-template-columns: 120px 150px minmax(210px, 1fr) minmax(210px, 1fr) 90px 80px 82px;
 }
 
 .table-head {

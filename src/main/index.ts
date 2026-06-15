@@ -17,6 +17,8 @@ const preferences = new Store<{
 let mainWindow: BrowserWindow | undefined;
 let db: GuardianDatabase | undefined;
 const isSmokeTest = process.env.MCP_GUARDIAN_SMOKE_TEST === '1';
+const allowsRendererSuppliedPaths =
+  isSmokeTest || process.env.NODE_ENV === 'test' || process.env.MCP_GUARDIAN_ALLOW_RENDERER_FILE_PATHS === '1';
 
 if (isSmokeTest) {
   app.commandLine.appendSwitch('disable-gpu');
@@ -53,6 +55,27 @@ function preloadScriptPath(): string {
     return built;
   }
   return path.join(__dirname, '../preload/index.mjs');
+}
+
+function backupDeletionWarnings(snapshot: Awaited<ReturnType<typeof scanDashboard>>, backupId: string): string[] {
+  const backup = snapshot.backups.find((candidate) => candidate.backupId === backupId);
+  if (!backup) {
+    throw new Error(`Backup ${backupId} not found`);
+  }
+
+  const warnings: string[] = [];
+  if (snapshot.servers.some((server) => server.guardian?.backupId === backupId)) {
+    warnings.push('used by a currently protected or disabled server');
+  }
+  if (backup.latestForServer) {
+    warnings.push('latest backup for this server');
+  }
+  if (backup.fileExists === false) {
+    warnings.push('backup file is missing');
+  } else if (backup.checksumMatches === false) {
+    warnings.push('backup checksum does not match registry');
+  }
+  return warnings;
 }
 
 async function createWindow(): Promise<void> {
@@ -154,6 +177,9 @@ function registerIpc(): void {
 
   ipcMain.handle('guardian:add-custom-source', async (_event, input?: { filePath?: string }) => {
     let filePath = input?.filePath;
+    if (filePath && !allowsRendererSuppliedPaths) {
+      throw new Error('Renderer-supplied custom source paths are only allowed in smoke/test mode. Use the file picker.');
+    }
     if (!filePath) {
       const dialogOptions: OpenDialogOptions = {
         title: 'Select MCP JSON config',
@@ -180,15 +206,77 @@ function registerIpc(): void {
 
   ipcMain.handle('guardian:open-backup-folder', async () => shell.openPath(getDb().backupDir));
 
+  ipcMain.handle('guardian:export-backup', async (_event, input: { backupId: string }) => {
+    const backup = getDb().listBackups().find((candidate) => candidate.backupId === input.backupId);
+    if (!backup) {
+      throw new Error(`Backup ${input.backupId} not found`);
+    }
+    if (!backup.fileExists) {
+      throw new Error('Backup file is missing and cannot be exported.');
+    }
+
+    const dialogOptions = {
+      title: 'Export MCP Guardian backup',
+      defaultPath: path.basename(backup.backupPath),
+      filters: [{ name: 'JSON backup', extensions: ['json'] }],
+    };
+    const result = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, dialogOptions)
+      : await dialog.showSaveDialog(dialogOptions);
+    if (result.canceled || !result.filePath) {
+      return '';
+    }
+
+    fs.copyFileSync(backup.backupPath, result.filePath);
+    return result.filePath;
+  });
+
   ipcMain.handle('guardian:delete-backup', async (_event, input: { backupId: string; confirmed?: boolean }) => {
     const snapshot = await scanDashboard(getDb());
-    const inUse = snapshot.servers.some((server) => server.guardian?.backupId === input.backupId);
-    if (inUse && !input.confirmed) {
-      throw new Error('Backup is used by a currently protected or disabled server; confirm before deleting it.');
+    const warnings = backupDeletionWarnings(snapshot, input.backupId);
+    if (warnings.length > 0 && !input.confirmed) {
+      throw new Error(`Backup requires confirmation before delete: ${warnings.join(', ')}.`);
     }
 
     getDb().deleteBackup(input.backupId);
     return scanDashboard(getDb());
+  });
+
+  ipcMain.handle('guardian:delete-old-backups', async (_event, input: { days: number }) => {
+    const days = Number(input.days);
+    if (!Number.isFinite(days) || days < 1) {
+      throw new Error('Backup age must be at least 1 day');
+    }
+
+    const snapshot = await scanDashboard(getDb());
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    let deletedCount = 0;
+    let skippedCount = 0;
+
+    for (const backup of snapshot.backups) {
+      if (new Date(backup.createdAt).getTime() >= cutoff) {
+        continue;
+      }
+
+      const warnings = backupDeletionWarnings(snapshot, backup.backupId);
+      if (warnings.length > 0) {
+        skippedCount += 1;
+        continue;
+      }
+
+      try {
+        getDb().deleteBackup(backup.backupId);
+        deletedCount += 1;
+      } catch {
+        skippedCount += 1;
+      }
+    }
+
+    return {
+      snapshot: await scanDashboard(getDb()),
+      deletedCount,
+      skippedCount,
+    };
   });
 
   ipcMain.handle(
