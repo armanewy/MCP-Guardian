@@ -18,7 +18,9 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "proxy": "tsx src/cli/proxy.ts",
-    "dogfood:fake-server": "tsx scripts/dogfood/fake-server.ts"
+    "dogfood:fake-server": "tsx scripts/dogfood/fake-server.ts",
+    "dogfood:fake-server:built": "tsx scripts/dogfood/fake-server.ts --built",
+    "smoke:electron": "tsx scripts/smoke/electron.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

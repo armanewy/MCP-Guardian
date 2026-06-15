@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import Store from 'electron-store';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,6 +7,7 @@ import { GuardianDatabase, getDefaultDatabasePath } from '../node/database';
 import { rewriteServerMode } from '../node/rewrite';
 import { scanDashboard } from '../node/scan';
 import type { PolicyAction, ServerMode } from '../shared/types';
+import type { OpenDialogOptions } from 'electron';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const preferences = new Store<{
@@ -15,6 +16,11 @@ const preferences = new Store<{
 
 let mainWindow: BrowserWindow | undefined;
 let db: GuardianDatabase | undefined;
+const isSmokeTest = process.env.MCP_GUARDIAN_SMOKE_TEST === '1';
+
+if (isSmokeTest) {
+  app.commandLine.appendSwitch('disable-gpu');
+}
 
 function getDb(): GuardianDatabase {
   db ??= new GuardianDatabase(getDefaultDatabasePath());
@@ -41,8 +47,16 @@ function cliLaunch(scriptName: 'proxy' | 'disabled'): { command: string; args: s
   return { command: 'node', args: [tsxCli, source] };
 }
 
+function preloadScriptPath(): string {
+  const built = path.join(__dirname, '../preload/index.js');
+  if (fs.existsSync(built)) {
+    return built;
+  }
+  return path.join(__dirname, '../preload/index.mjs');
+}
+
 async function createWindow(): Promise<void> {
-  const bounds = preferences.get('windowBounds') ?? { width: 1280, height: 820 };
+  const bounds = isSmokeTest ? { width: 1100, height: 760 } : preferences.get('windowBounds') ?? { width: 1280, height: 820 };
   mainWindow = new BrowserWindow({
     width: bounds.width,
     height: bounds.height,
@@ -50,8 +64,9 @@ async function createWindow(): Promise<void> {
     minHeight: 680,
     title: 'MCP Guardian',
     backgroundColor: '#f7f8fb',
+    show: !isSmokeTest,
     webPreferences: {
-      preload: path.join(__dirname, '../preload/index.js'),
+      preload: preloadScriptPath(),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -76,8 +91,105 @@ async function createWindow(): Promise<void> {
   }
 }
 
+async function runSmokeTest(): Promise<void> {
+  if (!mainWindow) {
+    throw new Error('Smoke test window was not created');
+  }
+
+  const timeout = setTimeout(() => {
+    console.error('MCP_GUARDIAN_SMOKE_FAIL timed out');
+    app.exit(1);
+  }, 20_000);
+
+  try {
+    const result = await mainWindow.webContents.executeJavaScript(`
+      (async () => {
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const waitFor = async (predicate, label) => {
+          for (let attempt = 0; attempt < 120; attempt += 1) {
+            if (predicate()) return;
+            await sleep(50);
+          }
+          throw new Error(label + ' did not become ready');
+        };
+
+        await waitFor(() => window.guardian && window.guardian.getSnapshot, 'guardian preload API');
+        await waitFor(() => document.body && document.body.innerText.includes('MCP Guardian'), 'renderer');
+
+        const snapshot = await window.guardian.getSnapshot();
+        if (!snapshot || !snapshot.generatedAt || !Array.isArray(snapshot.sources)) {
+          throw new Error('guardian:snapshot returned an invalid payload');
+        }
+
+        await waitFor(
+          () => Array.from(document.querySelectorAll('button')).some((button) =>
+            button.textContent && button.textContent.includes('Safety')
+          ),
+          'Safety navigation'
+        );
+        const safetyButton = Array.from(document.querySelectorAll('button')).find((button) =>
+          button.textContent && button.textContent.includes('Safety')
+        );
+        if (!safetyButton) {
+          throw new Error('Safety navigation button was not rendered');
+        }
+        safetyButton.click();
+        await waitFor(() => document.body.innerText.includes('Trust But Verify'), 'Safety screen');
+
+        return { generatedAt: snapshot.generatedAt, sources: snapshot.sources.length, safetyRendered: true };
+      })();
+    `);
+    clearTimeout(timeout);
+    console.log(`MCP_GUARDIAN_SMOKE_OK ${JSON.stringify(result)}`);
+    app.exit(0);
+  } catch (error) {
+    clearTimeout(timeout);
+    console.error(`MCP_GUARDIAN_SMOKE_FAIL ${error instanceof Error ? error.stack : String(error)}`);
+    app.exit(1);
+  }
+}
+
 function registerIpc(): void {
   ipcMain.handle('guardian:snapshot', async () => scanDashboard(getDb()));
+
+  ipcMain.handle('guardian:add-custom-source', async (_event, input?: { filePath?: string }) => {
+    let filePath = input?.filePath;
+    if (!filePath) {
+      const dialogOptions: OpenDialogOptions = {
+        title: 'Select MCP JSON config',
+        properties: ['openFile'],
+        filters: [{ name: 'JSON config', extensions: ['json'] }],
+      };
+      const result = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, dialogOptions)
+        : await dialog.showOpenDialog(dialogOptions);
+      if (result.canceled || result.filePaths.length === 0) {
+        return scanDashboard(getDb());
+      }
+      filePath = result.filePaths[0];
+    }
+
+    getDb().addCustomConfigSource(filePath);
+    return scanDashboard(getDb());
+  });
+
+  ipcMain.handle('guardian:remove-custom-source', async (_event, input: { id: string }) => {
+    getDb().removeCustomConfigSource(input.id);
+    return scanDashboard(getDb());
+  });
+
+  ipcMain.handle('guardian:open-backup-folder', async () => shell.openPath(getDb().backupDir));
+
+  ipcMain.handle('guardian:delete-backup', async (_event, input: { backupId: string; confirmed?: boolean }) => {
+    const snapshot = await scanDashboard(getDb());
+    const inUse = snapshot.servers.some((server) => server.guardian?.backupId === input.backupId);
+    if (inUse && !input.confirmed) {
+      throw new Error('Backup is used by a currently protected or disabled server; confirm before deleting it.');
+    }
+
+    getDb().deleteBackup(input.backupId);
+    return scanDashboard(getDb());
+  });
 
   ipcMain.handle(
     'guardian:set-policy',
@@ -151,6 +263,11 @@ app.whenReady().then(async () => {
   app.setName('MCP Guardian');
   registerIpc();
   await createWindow();
+
+  if (isSmokeTest) {
+    await runSmokeTest();
+    return;
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

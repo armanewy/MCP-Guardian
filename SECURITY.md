@@ -2,6 +2,25 @@
 
 MCP Guardian is designed for local dogfooding and defense-in-depth around MCP configuration and stdio tool calls. It is not a full sandbox.
 
+## Supported Versions
+
+| Version | Support |
+| --- | --- |
+| `main` / `0.1.x` private alpha | Security fixes accepted for local dogfooding only |
+
+Do not use private-alpha builds as a production security boundary.
+
+## Vulnerability Reporting
+
+Please report suspected vulnerabilities privately before opening public issues or pull requests. Include:
+
+- affected commit or release;
+- operating system and MCP client config path;
+- reproduction steps with a fake or disposable MCP server when possible;
+- whether backups, audit logs, policy decisions, or rewritten config files exposed sensitive data.
+
+Use GitHub private vulnerability reporting if it is enabled for the repository. If it is not enabled, contact the repository owner privately and avoid posting secrets, backup files, or exploit details in public trackers.
+
 ## Current Protections
 
 - Stable server identity uses SHA-256 over normalized source path, config root, and server name.

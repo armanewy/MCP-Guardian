@@ -7,6 +7,7 @@ import type {
   AuditLogRecord,
   BackupRecord,
   AuditDetailLevel,
+  ClientConfigSource,
   McpServerDefinition,
   PendingApprovalRecord,
   PolicyAction,
@@ -113,6 +114,25 @@ function summarizeRequestMinimal(value: unknown): string {
 
 function coerceAuditDetailLevel(value: string | undefined): AuditDetailLevel {
   return value === 'redacted-preview' ? 'redacted-preview' : 'minimal';
+}
+
+function customSourceId(filePath: string): string {
+  return `custom:${path.resolve(filePath)}`;
+}
+
+function normalizeComparablePath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function parseJsonArray(value: string | undefined): unknown[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 export function summarizeToolResponse(
@@ -269,6 +289,66 @@ export class GuardianDatabase {
       `,
       )
       .run({ level, updatedAt: nowIso() });
+  }
+
+  private getSettingValue(key: string): string | undefined {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+      | { value: string }
+      | undefined;
+    return row?.value;
+  }
+
+  private setSettingValue(key: string, value: string): void {
+    this.db
+      .prepare(
+        `
+        INSERT INTO settings (key, value, updated_at)
+        VALUES (@key, @value, @updatedAt)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `,
+      )
+      .run({ key, value, updatedAt: nowIso() });
+  }
+
+  listCustomConfigSources(): ClientConfigSource[] {
+    return parseJsonArray(this.getSettingValue('customConfigSources'))
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+      .map((filePath) => path.resolve(filePath))
+      .filter((filePath, index, paths) => {
+        const comparable = normalizeComparablePath(filePath);
+        return paths.findIndex((candidate) => normalizeComparablePath(candidate) === comparable) === index;
+      })
+      .map((filePath) => ({
+        id: customSourceId(filePath),
+        client: 'Custom',
+        path: filePath,
+        exists: false,
+        parser: 'mcp-json' as const,
+        sourceKind: 'custom' as const,
+      }));
+  }
+
+  addCustomConfigSource(filePath: string): ClientConfigSource[] {
+    const resolved = path.resolve(filePath);
+    const current = this.listCustomConfigSources().map((source) => source.path);
+    if (!current.some((candidate) => normalizeComparablePath(candidate) === normalizeComparablePath(resolved))) {
+      current.push(resolved);
+      this.setSettingValue('customConfigSources', JSON.stringify(current));
+    }
+    return this.listCustomConfigSources();
+  }
+
+  removeCustomConfigSource(idOrPath: string): ClientConfigSource[] {
+    const current = this.listCustomConfigSources();
+    const remaining = current
+      .filter(
+        (source) =>
+          source.id !== idOrPath &&
+          normalizeComparablePath(source.path) !== normalizeComparablePath(idOrPath.replace(/^custom:/, '')),
+      )
+      .map((source) => source.path);
+    this.setSettingValue('customConfigSources', JSON.stringify(remaining));
+    return this.listCustomConfigSources();
   }
 
   listPolicies(): PolicyRecord[] {
@@ -449,6 +529,46 @@ export class GuardianDatabase {
       sha256: row.sha256,
       createdAt: row.created_at,
     };
+  }
+
+  listBackups(): BackupRecord[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT backup_id, source_path, server_id, server_name, config_root_key, backup_path, sha256, created_at
+        FROM backups
+        ORDER BY created_at DESC
+      `,
+      )
+      .all() as Array<Record<string, string>>;
+
+    return rows.map((row) => ({
+      backupId: row.backup_id,
+      sourcePath: row.source_path,
+      serverId: row.server_id,
+      serverName: row.server_name,
+      configRootKey: row.config_root_key,
+      backupPath: row.backup_path,
+      sha256: row.sha256,
+      createdAt: row.created_at,
+    }));
+  }
+
+  deleteBackup(backupId: string): void {
+    const backup = this.getBackup(backupId);
+    if (!backup) {
+      throw new Error(`Backup ${backupId} not found`);
+    }
+
+    try {
+      fs.rmSync(backup.backupPath, { force: true });
+    } catch (error) {
+      throw new Error(`Unable to delete backup file: ${error instanceof Error ? error.message : String(error)}`, {
+        cause: error,
+      });
+    }
+
+    this.db.prepare('DELETE FROM backups WHERE backup_id = ?').run(backupId);
   }
 
   getLatestBackupForServer(serverId: string): BackupRecord | undefined {

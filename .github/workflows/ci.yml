@@ -42,3 +42,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Dogfood built fake server
+        run: npm run dogfood:fake-server:built
+
+      - name: Electron smoke
+        run: npm run smoke:electron

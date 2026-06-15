@@ -225,6 +225,53 @@ describe('config rewrite', () => {
   });
 });
 
+describe('database inventory settings', () => {
+  it('persists custom config sources in SQLite settings', () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, 'guardian.sqlite');
+    const configPath = path.join(dir, 'custom-mcp.json');
+    let db = new GuardianDatabase(dbPath);
+
+    db.addCustomConfigSource(configPath);
+    db.addCustomConfigSource(configPath);
+    expect(db.listCustomConfigSources()).toEqual([
+      expect.objectContaining({
+        client: 'Custom',
+        path: path.resolve(configPath),
+        parser: 'mcp-json',
+        sourceKind: 'custom',
+      }),
+    ]);
+    db.close();
+
+    db = new GuardianDatabase(dbPath);
+    expect(db.listCustomConfigSources()).toHaveLength(1);
+    db.removeCustomConfigSource(db.listCustomConfigSources()[0].id);
+    expect(db.listCustomConfigSources()).toHaveLength(0);
+    db.close();
+  });
+
+  it('lists and deletes stale backup files', () => {
+    const fixture = setupRewriteFixture();
+    const result = rewriteServerMode({
+      sourcePath: fixture.configPath,
+      serverId: fixture.serverId,
+      serverName: 'filesystem',
+      configRootKey: 'mcpServers',
+      mode: 'disabled',
+      expectedOriginalFingerprint: fingerprintServerConfig(fixture.original),
+      launch: fixture.launch,
+      db: fixture.db,
+    });
+
+    expect(fixture.db.listBackups().map((backup) => backup.backupId)).toContain(result.backupId);
+    fixture.db.deleteBackup(result.backupId ?? '');
+    expect(fs.existsSync(result.backupPath)).toBe(false);
+    expect(fixture.db.listBackups().map((backup) => backup.backupId)).not.toContain(result.backupId);
+    fixture.db.close();
+  });
+});
+
 describe('sqlite audit logging', () => {
   it('uses minimal request logging by default without value previews', () => {
     const dir = tempDir();

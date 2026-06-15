@@ -3,6 +3,13 @@ import type { DashboardSnapshot, PolicyAction, ServerMode } from '../shared/type
 
 const api = {
   getSnapshot: (): Promise<DashboardSnapshot> => ipcRenderer.invoke('guardian:snapshot'),
+  addCustomSource: (input?: { filePath?: string }): Promise<DashboardSnapshot> =>
+    ipcRenderer.invoke('guardian:add-custom-source', input),
+  removeCustomSource: (input: { id: string }): Promise<DashboardSnapshot> =>
+    ipcRenderer.invoke('guardian:remove-custom-source', input),
+  openBackupFolder: (): Promise<string> => ipcRenderer.invoke('guardian:open-backup-folder'),
+  deleteBackup: (input: { backupId: string; confirmed?: boolean }): Promise<DashboardSnapshot> =>
+    ipcRenderer.invoke('guardian:delete-backup', input),
   setPolicy: (input: {
     serverId: string;
     toolName: string;

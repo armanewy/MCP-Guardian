@@ -522,7 +522,7 @@ nav {
 }
 
 .source-row {
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
   padding: 13px 18px;
   border-bottom: 1px solid #edf0f5;
 }
@@ -580,6 +580,10 @@ nav {
 
 .audit-table .table-row {
   grid-template-columns: 120px 1fr 1fr 150px 100px 1.2fr;
+}
+
+.backup-table .table-row {
+  grid-template-columns: 120px 160px minmax(220px, 1fr) minmax(220px, 1fr) 90px 46px;
 }
 
 .table-head {

@@ -76,6 +76,8 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
+npm run dogfood:fake-server:built
+npm run smoke:electron
 ```
 
 Use `npm run dev` to launch the Electron app during development.
@@ -89,3 +91,5 @@ npm run dogfood:fake-server
 ```
 
 The harness creates a temporary MCP config, protects a fake server, verifies blocked calls are not forwarded, checks default sensitive tools require approval, exercises an approved call that forwards upstream, checks upstream env isolation, verifies minimal audit logs do not persist private request or response values, and restores the original config exactly.
+
+After `npm run build`, run `npm run dogfood:fake-server:built` to exercise the compiled `out/cli/proxy.js` and `out/cli/disabled.js` runtime. Run `npm run smoke:electron` to launch the built Electron app in smoke-test mode and verify the renderer, snapshot IPC, and Safety screen.

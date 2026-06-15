@@ -5,6 +5,8 @@ export function candidateConfigSources(input: {
   homeDir: string;
   platform: NodeJS.Platform;
   env: NodeJS.ProcessEnv;
+  workspaceFolders?: string[];
+  customSources?: ClientConfigSource[];
 }): ClientConfigSource[] {
   const { homeDir, platform, env } = input;
   const appData = env.APPDATA ?? path.join(homeDir, 'AppData', 'Roaming');
@@ -12,13 +14,20 @@ export function candidateConfigSources(input: {
 
   const candidates: ClientConfigSource[] = [];
 
-  function add(client: string, filePath: string, parser: ClientConfigSource['parser']): void {
+  function add(
+    client: string,
+    filePath: string,
+    parser: ClientConfigSource['parser'],
+    sourceKind: ClientConfigSource['sourceKind'] = 'default',
+  ): void {
+    const resolved = path.resolve(filePath);
     candidates.push({
-      id: `${client}:${filePath}`,
+      id: `${sourceKind}:${client}:${resolved}`,
       client,
-      path: filePath,
+      path: resolved,
       exists: false,
       parser,
+      sourceKind,
     });
   }
 
@@ -47,5 +56,28 @@ export function candidateConfigSources(input: {
     add('Claude Code', path.join(homeDir, '.claude', 'mcp.json'), 'mcp-json');
   }
 
-  return candidates;
+  for (const workspaceFolder of input.workspaceFolders ?? []) {
+    const folder = path.resolve(workspaceFolder);
+    add('VS Code Workspace', path.join(folder, '.vscode', 'mcp.json'), 'mcp-json', 'workspace');
+    add('Cursor Workspace', path.join(folder, '.cursor', 'mcp.json'), 'mcp-json', 'workspace');
+  }
+
+  for (const source of input.customSources ?? []) {
+    candidates.push({
+      ...source,
+      id: source.id || `custom:${path.resolve(source.path)}`,
+      path: path.resolve(source.path),
+      exists: false,
+      parser: source.parser === 'unknown' ? 'mcp-json' : source.parser,
+      sourceKind: 'custom',
+    });
+  }
+
+  const seen = new Set<string>();
+  return candidates.filter((source) => {
+    const key = `${source.parser}:${platform === 'win32' ? source.path.toLowerCase() : source.path}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

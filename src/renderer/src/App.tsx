@@ -5,20 +5,24 @@ import {
   ClipboardList,
   Database,
   FileJson,
+  FolderOpen,
   Gauge,
   Lock,
+  Plus,
   RefreshCw,
   ShieldCheck,
   Server,
   Shield,
   ShieldAlert,
   SlidersHorizontal,
+  Trash2,
   Unlock,
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
 import type {
+  BackupRecord,
   DashboardSnapshot,
   PendingApprovalRecord,
   PolicyAction,
@@ -30,7 +34,7 @@ import type {
 } from '../../shared/types';
 import { evaluatePolicy } from '../../shared/policy';
 
-type ViewKey = 'dashboard' | 'servers' | 'tools' | 'policies' | 'approvals' | 'audit' | 'safety';
+type ViewKey = 'dashboard' | 'servers' | 'tools' | 'policies' | 'approvals' | 'audit' | 'backups' | 'safety';
 
 const riskOrder: Record<RiskLevel, number> = {
   low: 0,
@@ -78,6 +82,10 @@ function sortedServers(snapshot: DashboardSnapshot): ServerSummary[] {
     const riskDelta = riskOrder[right.risk.level] - riskOrder[left.risk.level];
     return riskDelta || left.name.localeCompare(right.name);
   });
+}
+
+function backupInUse(snapshot: DashboardSnapshot, backupId: string): boolean {
+  return snapshot.servers.some((server) => server.guardian?.backupId === backupId);
 }
 
 function serverRecommendation(server: ServerSummary): string {
@@ -157,6 +165,7 @@ function Sidebar({
     { key: 'policies', label: 'Policies', icon: <SlidersHorizontal size={18} /> },
     { key: 'approvals', label: 'Approvals', icon: <ShieldAlert size={18} />, count: pendingCount },
     { key: 'audit', label: 'Audit', icon: <ClipboardList size={18} /> },
+    { key: 'backups', label: 'Backups', icon: <Database size={18} /> },
     { key: 'safety', label: 'Safety', icon: <ShieldCheck size={18} /> },
   ];
 
@@ -319,21 +328,41 @@ function DashboardView({
   );
 }
 
-function SourcesPanel({ snapshot }: { snapshot: DashboardSnapshot }): ReactElement {
+function SourcesPanel({
+  snapshot,
+  onAddCustomSource,
+  onRemoveCustomSource,
+}: {
+  snapshot: DashboardSnapshot;
+  onAddCustomSource: () => void;
+  onRemoveCustomSource: (id: string) => void;
+}): ReactElement {
   return (
     <div className="panel">
       <div className="panel-header">
         <h3>Config Sources</h3>
+        <button className="secondary-button" type="button" onClick={onAddCustomSource}>
+          <Plus size={16} />
+          Add JSON
+        </button>
       </div>
       <div className="source-list">
         {snapshot.sources.map((source) => (
           <div key={source.id} className="source-row">
             <FileJson size={18} />
             <div>
-              <strong>{source.client}</strong>
+              <strong>
+                {source.client}
+                {source.sourceKind ? ` (${source.sourceKind})` : ''}
+              </strong>
               <span title={source.path}>{source.path}</span>
             </div>
             <span className={source.exists ? 'source-state found' : 'source-state'}>{source.exists ? 'found' : 'missing'}</span>
+            {source.sourceKind === 'custom' ? (
+              <IconButton label="Remove custom source" onClick={() => onRemoveCustomSource(source.id)}>
+                <Trash2 size={16} />
+              </IconButton>
+            ) : null}
           </div>
         ))}
       </div>
@@ -761,6 +790,65 @@ function AuditView({ snapshot }: { snapshot: DashboardSnapshot }): ReactElement 
   );
 }
 
+function BackupsView({
+  snapshot,
+  onOpenBackupFolder,
+  onDeleteBackup,
+}: {
+  snapshot: DashboardSnapshot;
+  onOpenBackupFolder: () => void;
+  onDeleteBackup: (backup: BackupRecord) => void;
+}): ReactElement {
+  return (
+    <div className="view-stack">
+      <div className="warning-box">
+        <AlertTriangle size={18} />
+        <span>
+          Backup files preserve MCP configs and may contain secrets. Delete only stale backups you no
+          longer need for restore.
+        </span>
+      </div>
+      <div className="panel">
+        <div className="panel-header">
+          <h3>Backup Inventory</h3>
+          <button className="secondary-button" type="button" onClick={onOpenBackupFolder}>
+            <FolderOpen size={16} />
+            Open Folder
+          </button>
+        </div>
+        <div className="table backup-table">
+          <div className="table-row table-head">
+            <span>Created</span>
+            <span>Server</span>
+            <span>Source</span>
+            <span>Backup</span>
+            <span>Status</span>
+            <span></span>
+          </div>
+          {snapshot.backups.map((backup) => {
+            const inUse = backupInUse(snapshot, backup.backupId);
+            return (
+              <div className="table-row" key={backup.backupId}>
+                <span>{formatDate(backup.createdAt)}</span>
+                <span>{backup.serverName}</span>
+                <span title={backup.sourcePath}>{backup.sourcePath}</span>
+                <span title={backup.backupPath}>{backup.backupPath}</span>
+                <span className={inUse ? 'source-state found' : 'source-state'}>{inUse ? 'in use' : 'stale'}</span>
+                <span>
+                  <IconButton label="Delete backup" onClick={() => onDeleteBackup(backup)}>
+                    <Trash2 size={16} />
+                  </IconButton>
+                </span>
+              </div>
+            );
+          })}
+          {snapshot.backups.length === 0 ? <div className="empty-state">No backups written yet.</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function App(): ReactElement {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | undefined>();
   const [view, setView] = useState<ViewKey>('dashboard');
@@ -820,6 +908,32 @@ export function App(): ReactElement {
     setSnapshot(await window.guardian.resolveApproval({ id, decision }));
   };
 
+  const addCustomSource = async (): Promise<void> => {
+    setSnapshot(await window.guardian.addCustomSource());
+  };
+
+  const removeCustomSource = async (id: string): Promise<void> => {
+    setSnapshot(await window.guardian.removeCustomSource({ id }));
+  };
+
+  const openBackupFolder = async (): Promise<void> => {
+    const result = await window.guardian.openBackupFolder();
+    if (result) {
+      setNotice(result);
+    }
+  };
+
+  const deleteBackup = async (backup: BackupRecord): Promise<void> => {
+    const inUse = snapshot ? backupInUse(snapshot, backup.backupId) : false;
+    const confirmed =
+      !inUse ||
+      window.confirm(
+        'This backup is used by a currently protected or disabled server. Delete it only if you have another restore path.',
+      );
+    if (!confirmed) return;
+    setSnapshot(await window.guardian.deleteBackup({ backupId: backup.backupId, confirmed: inUse }));
+  };
+
   if (!snapshot) {
     return (
       <div className="loading-screen">
@@ -853,7 +967,11 @@ export function App(): ReactElement {
               busy={busy}
               onMode={applyMode}
             />
-            <SourcesPanel snapshot={snapshot} />
+            <SourcesPanel
+              snapshot={snapshot}
+              onAddCustomSource={addCustomSource}
+              onRemoveCustomSource={removeCustomSource}
+            />
           </div>
         ) : null}
         {view === 'tools' ? (
@@ -866,6 +984,9 @@ export function App(): ReactElement {
           <ApprovalsView approvals={snapshot.pendingApprovals} onResolve={resolveApproval} />
         ) : null}
         {view === 'audit' ? <AuditView snapshot={snapshot} /> : null}
+        {view === 'backups' ? (
+          <BackupsView snapshot={snapshot} onOpenBackupFolder={openBackupFolder} onDeleteBackup={deleteBackup} />
+        ) : null}
         {view === 'safety' ? <SafetyView snapshot={snapshot} /> : null}
       </main>
     </div>

@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 import { candidateConfigSources } from '../shared/discovery';
 import { parseMcpConfig } from '../shared/parser';
 import { classifyServer, inferToolsForServer } from '../shared/risk';
@@ -7,6 +8,23 @@ import { redactDeep } from '../shared/redaction';
 import type { ClientConfigSource, DashboardSnapshot, McpServerDefinition, ServerSummary, ToolInventoryItem, TransportKind } from '../shared/types';
 import { GuardianDatabase, getDefaultDatabasePath, getDefaultGuardianHome } from './database';
 import { stripGuardianMetadata } from '../shared/identity';
+
+function workspaceFoldersFromEnv(env: NodeJS.ProcessEnv, cwd = process.cwd()): string[] {
+  const folders = new Set<string>();
+  if (env.MCP_GUARDIAN_WORKSPACE_FOLDERS) {
+    for (const folder of env.MCP_GUARDIAN_WORKSPACE_FOLDERS.split(path.delimiter)) {
+      if (folder.trim()) {
+        folders.add(path.resolve(folder.trim()));
+      }
+    }
+  }
+
+  if (env.MCP_GUARDIAN_SCAN_CWD !== '0') {
+    folders.add(path.resolve(cwd));
+  }
+
+  return [...folders];
+}
 
 async function sourceExists(source: ClientConfigSource): Promise<ClientConfigSource> {
   try {
@@ -42,6 +60,8 @@ export async function scanDashboard(db = new GuardianDatabase()): Promise<Dashbo
     homeDir: os.homedir(),
     platform: process.platform,
     env: process.env,
+    workspaceFolders: workspaceFoldersFromEnv(process.env),
+    customSources: db.listCustomConfigSources(),
   });
   const sources = await Promise.all(candidates.map(sourceExists));
   const summaries: ServerSummary[] = [];
@@ -100,5 +120,6 @@ export async function scanDashboard(db = new GuardianDatabase()): Promise<Dashbo
     policies: db.listPolicies(),
     audits: db.listAuditLogs(),
     pendingApprovals: db.listPendingApprovals(),
+    backups: db.listBackups(),
   };
 }

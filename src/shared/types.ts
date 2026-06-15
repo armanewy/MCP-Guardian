@@ -16,6 +16,7 @@ export interface ClientConfigSource {
   path: string;
   exists: boolean;
   parser: 'claude-desktop' | 'mcp-json' | 'vscode-settings' | 'unknown';
+  sourceKind?: 'default' | 'workspace' | 'custom';
   error?: string;
 }
 
@@ -149,6 +150,7 @@ export interface DashboardSnapshot {
   policies: PolicyRecord[];
   audits: AuditLogRecord[];
   pendingApprovals: PendingApprovalRecord[];
+  backups: BackupRecord[];
 }
 
 export interface RewriteLaunchConfig {

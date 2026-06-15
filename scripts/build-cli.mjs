@@ -6,7 +6,6 @@ const common = {
   format: 'esm',
   target: 'node20',
   sourcemap: false,
-  banner: { js: '#!/usr/bin/env node' },
   external: ['better-sqlite3', '@modelcontextprotocol/sdk/*', '@modelcontextprotocol/sdk'],
 };
 

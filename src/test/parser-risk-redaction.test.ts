@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import path from 'node:path';
+import { candidateConfigSources } from '../shared/discovery';
 import { createServerId, fingerprintServerConfig, normalizeSourcePath } from '../shared/identity';
 import { parseMcpConfig } from '../shared/parser';
 import { classifyServer, classifyTool } from '../shared/risk';
@@ -88,6 +90,33 @@ describe('config parser', () => {
     expect(parsed.servers[0].guardian?.backupId).toBe('backup-1');
     expect(parsed.servers[0].guardian).not.toHaveProperty('original');
     expect(parsed.servers[0].originalFingerprint).toBe(originalFingerprint);
+  });
+});
+
+describe('config discovery', () => {
+  it('includes workspace MCP JSON files for VS Code and Cursor', () => {
+    const workspace = path.resolve('/workspace/project');
+    const sources = candidateConfigSources({
+      homeDir: '/home/tester',
+      platform: 'linux',
+      env: {},
+      workspaceFolders: [workspace],
+    });
+
+    expect(sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          client: 'VS Code Workspace',
+          path: path.join(workspace, '.vscode', 'mcp.json'),
+          sourceKind: 'workspace',
+        }),
+        expect.objectContaining({
+          client: 'Cursor Workspace',
+          path: path.join(workspace, '.cursor', 'mcp.json'),
+          sourceKind: 'workspace',
+        }),
+      ]),
+    );
   });
 });
 

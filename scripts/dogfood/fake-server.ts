@@ -23,6 +23,21 @@ function tsxCli(): string {
   return repoPath('node_modules', 'tsx', 'dist', 'cli.mjs');
 }
 
+const useBuiltRuntime = process.argv.includes('--built');
+
+function guardianCliLaunch(scriptName: 'proxy' | 'disabled'): { command: string; args: string[] } {
+  if (useBuiltRuntime) {
+    const built = repoPath('out', 'cli', `${scriptName}.js`);
+    assert(fs.existsSync(built), `Built CLI missing at ${built}; run npm run build first`);
+    return { command: process.execPath, args: [built] };
+  }
+
+  return {
+    command: process.execPath,
+    args: [tsxCli(), repoPath('src', 'cli', `${scriptName}.ts`)],
+  };
+}
+
 function textFromResult(result: any): string {
   return String(result?.content?.[0]?.text ?? '');
 }
@@ -66,8 +81,8 @@ try {
     mode: 'protected',
     expectedOriginalFingerprint: fingerprintServerConfig(originalConfig),
     launch: {
-      disabled: { command: process.execPath, args: [tsxCli(), repoPath('src', 'cli', 'disabled.ts')] },
-      proxy: { command: process.execPath, args: [tsxCli(), repoPath('src', 'cli', 'proxy.ts')] },
+      disabled: guardianCliLaunch('disabled'),
+      proxy: guardianCliLaunch('proxy'),
     },
     db,
   });
@@ -195,8 +210,8 @@ try {
     mode: 'active',
     expectedOriginalFingerprint: fingerprintServerConfig(originalConfig),
     launch: {
-      disabled: { command: process.execPath, args: [tsxCli(), repoPath('src', 'cli', 'disabled.ts')] },
-      proxy: { command: process.execPath, args: [tsxCli(), repoPath('src', 'cli', 'proxy.ts')] },
+      disabled: guardianCliLaunch('disabled'),
+      proxy: guardianCliLaunch('proxy'),
     },
     db,
   });
@@ -209,6 +224,7 @@ try {
         ok: true,
         tempRoot,
         backupId: protectedRewrite.backupId,
+        runtime: useBuiltRuntime ? 'built' : 'source',
         checks: [
           'blocked tools hidden',
           'blocked call not forwarded',
