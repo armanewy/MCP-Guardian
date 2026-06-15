@@ -44,7 +44,7 @@ If the app cannot start, use `~/.mcp-guardian/mcp-guardian.sqlite` to find the b
 
 ## Demo Outline
 
-Use this 60-90 second script for private-alpha demos:
+Use [DEMO.md](DEMO.md) for the full 60-90 second private-alpha demo script. The short flow is:
 
 1. Scan local MCP config sources.
 2. Select a high-risk fake server.

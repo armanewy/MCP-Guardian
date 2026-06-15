@@ -82,7 +82,7 @@ npm run smoke:electron
 
 Use `npm run dev` to launch the Electron app during development.
 
-For controlled private-alpha testing, use [PRIVATE_ALPHA.md](PRIVATE_ALPHA.md).
+For controlled private-alpha testing, use [PRIVATE_ALPHA.md](PRIVATE_ALPHA.md). For a concise recording flow, use [DEMO.md](DEMO.md).
 
 ## Dogfood Harness
 
