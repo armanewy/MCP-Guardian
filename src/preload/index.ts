@@ -4,11 +4,11 @@ import type { DashboardSnapshot, PolicyAction, ServerMode } from '../shared/type
 const api = {
   getSnapshot: (): Promise<DashboardSnapshot> => ipcRenderer.invoke('guardian:snapshot'),
   setPolicy: (input: {
-    serverName: string;
+    serverId: string;
     toolName: string;
     action: PolicyAction;
   }): Promise<DashboardSnapshot> => ipcRenderer.invoke('guardian:set-policy', input),
-  deletePolicy: (input: { serverName: string; toolName: string }): Promise<DashboardSnapshot> =>
+  deletePolicy: (input: { serverId: string; toolName: string }): Promise<DashboardSnapshot> =>
     ipcRenderer.invoke('guardian:delete-policy', input),
   resolveApproval: (input: {
     id: number;
@@ -16,12 +16,10 @@ const api = {
     reason?: string;
   }): Promise<DashboardSnapshot> => ipcRenderer.invoke('guardian:resolve-approval', input),
   applyMode: (input: {
-    sourcePath: string;
-    serverName: string;
-    configRootKey: string;
+    serverId: string;
     mode: ServerMode;
   }): Promise<{
-    result: { backupPath: string; sourcePath: string; serverName: string; mode: ServerMode };
+    result: { backupPath: string; sourcePath: string; serverId: string; serverName: string; mode: ServerMode };
     snapshot: DashboardSnapshot;
   }> => ipcRenderer.invoke('guardian:apply-mode', input),
 };

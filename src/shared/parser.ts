@@ -7,20 +7,14 @@ import type {
   ServerMode,
   TransportKind,
 } from './types';
+import { createServerId, fingerprintServerConfig, stripGuardianMetadata } from './identity';
 
 const EnvSchema = z.record(z.string(), z.string()).optional();
 
 const GuardianMetadataSchema: z.ZodType<GuardianMetadata> = z.object({
   mode: z.enum(['disabled', 'protected']),
-  original: z
-    .object({
-      command: z.string().optional(),
-      args: z.array(z.string()).optional(),
-      env: EnvSchema,
-      url: z.string().optional(),
-      transport: z.enum(['stdio', 'http', 'unknown']).optional(),
-    })
-    .passthrough(),
+  backupId: z.string(),
+  originalFingerprint: z.string(),
   updatedAt: z.string(),
   note: z.string().optional(),
 });
@@ -30,6 +24,7 @@ const ServerDefinitionSchema = z
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     env: EnvSchema,
+    cwd: z.string().optional(),
     url: z.string().optional(),
     transport: z.enum(['stdio', 'http', 'unknown']).optional(),
     mcpGuardian: GuardianMetadataSchema.optional(),
@@ -104,7 +99,14 @@ export function parseMcpConfig(source: ClientConfigSource, content: string): Par
 
     const currentConfig = parsed.data;
     const mode = detectMode(currentConfig);
-    const displayConfig = currentConfig.mcpGuardian?.original ?? currentConfig;
+    const serverId = createServerId({
+      sourcePath: source.path,
+      configRootKey: root.key,
+      serverName: name,
+    });
+    const displayConfig = stripGuardianMetadata(currentConfig);
+    const originalFingerprint =
+      currentConfig.mcpGuardian?.originalFingerprint ?? fingerprintServerConfig(displayConfig);
     const transport = detectTransport(displayConfig);
     const parseWarnings: string[] = [];
 
@@ -116,12 +118,14 @@ export function parseMcpConfig(source: ClientConfigSource, content: string): Par
     }
 
     servers.push({
-      id: `${source.path}::${name}`,
+      id: serverId,
+      serverId,
       name,
       source,
       mode,
       transport,
       configRootKey: root.key,
+      originalFingerprint,
       displayConfig,
       currentConfig,
       guardian: currentConfig.mcpGuardian,

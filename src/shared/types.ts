@@ -21,6 +21,7 @@ export interface McpServerDefinition {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  cwd?: string;
   url?: string;
   transport?: TransportKind;
   [key: string]: unknown;
@@ -28,18 +29,21 @@ export interface McpServerDefinition {
 
 export interface GuardianMetadata {
   mode: Exclude<ServerMode, 'active'>;
-  original: McpServerDefinition;
+  backupId: string;
+  originalFingerprint: string;
   updatedAt: string;
   note?: string;
 }
 
 export interface ParsedMcpServer {
   id: string;
+  serverId: string;
   name: string;
   source: ClientConfigSource;
   mode: ServerMode;
   transport: TransportKind;
   configRootKey: string;
+  originalFingerprint: string;
   displayConfig: McpServerDefinition;
   currentConfig: McpServerDefinition & { mcpGuardian?: GuardianMetadata };
   guardian?: GuardianMetadata;
@@ -72,6 +76,7 @@ export interface ServerSummary extends ParsedMcpServer {
 }
 
 export interface ToolInventoryItem {
+  serverId: string;
   serverName: string;
   toolName: string;
   description?: string;
@@ -83,7 +88,8 @@ export interface ToolInventoryItem {
 }
 
 export interface PolicyRecord {
-  serverName: string;
+  serverId: string;
+  serverName?: string;
   toolName: string;
   action: PolicyAction;
   updatedAt: string;
@@ -98,13 +104,14 @@ export interface PolicyEvaluation {
 export interface AuditLogRecord {
   id: number;
   createdAt: string;
+  serverId: string;
   serverName: string;
   toolName: string;
   action: string;
   decision: string;
   risk: RiskLevel;
   requestJson?: string;
-  responseJson?: string;
+  responseSummaryJson?: string;
   error?: string;
   sourcePath?: string;
 }
@@ -113,6 +120,7 @@ export interface PendingApprovalRecord {
   id: number;
   createdAt: string;
   expiresAt: string;
+  serverId: string;
   serverName: string;
   toolName: string;
   risk: RiskLevel;
@@ -145,8 +153,21 @@ export interface RewriteLaunchConfig {
 }
 
 export interface RewriteResult {
+  backupId?: string;
   backupPath: string;
   sourcePath: string;
+  serverId: string;
   serverName: string;
   mode: ServerMode;
+}
+
+export interface BackupRecord {
+  backupId: string;
+  sourcePath: string;
+  serverId: string;
+  serverName: string;
+  configRootKey: string;
+  backupPath: string;
+  sha256: string;
+  createdAt: string;
 }

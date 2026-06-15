@@ -4,8 +4,9 @@ import { candidateConfigSources } from '../shared/discovery';
 import { parseMcpConfig } from '../shared/parser';
 import { classifyServer, inferToolsForServer } from '../shared/risk';
 import { redactDeep } from '../shared/redaction';
-import type { ClientConfigSource, DashboardSnapshot, ServerSummary, ToolInventoryItem } from '../shared/types';
+import type { ClientConfigSource, DashboardSnapshot, McpServerDefinition, ServerSummary, ToolInventoryItem, TransportKind } from '../shared/types';
 import { GuardianDatabase, getDefaultDatabasePath, getDefaultGuardianHome } from './database';
+import { stripGuardianMetadata } from '../shared/identity';
 
 async function sourceExists(source: ClientConfigSource): Promise<ClientConfigSource> {
   try {
@@ -19,14 +20,21 @@ async function sourceExists(source: ClientConfigSource): Promise<ClientConfigSou
 function mergeTools(inferred: ToolInventoryItem[], actual: ToolInventoryItem[]): ToolInventoryItem[] {
   const merged = new Map<string, ToolInventoryItem>();
   for (const tool of inferred) {
-    merged.set(`${tool.serverName}/${tool.toolName}`, tool);
+    merged.set(`${tool.serverId}/${tool.toolName}`, tool);
   }
   for (const tool of actual) {
-    merged.set(`${tool.serverName}/${tool.toolName}`, tool);
+    merged.set(`${tool.serverId}/${tool.toolName}`, tool);
   }
   return [...merged.values()].sort((left, right) =>
     `${left.serverName}/${left.toolName}`.localeCompare(`${right.serverName}/${right.toolName}`),
   );
+}
+
+function detectTransport(config: McpServerDefinition): TransportKind {
+  if (config.transport === 'http' || config.transport === 'stdio') return config.transport;
+  if (config.url) return 'http';
+  if (config.command) return 'stdio';
+  return 'unknown';
 }
 
 export async function scanDashboard(db = new GuardianDatabase()): Promise<DashboardSnapshot> {
@@ -43,12 +51,33 @@ export async function scanDashboard(db = new GuardianDatabase()): Promise<Dashbo
       const content = await fs.readFile(source.path, 'utf8');
       const parsed = parseMcpConfig(source, content);
       for (const server of parsed.servers) {
-        const risk = classifyServer(server);
-        summaries.push({
+        let displayConfig = server.displayConfig;
+        const parseWarnings = [...server.parseWarnings];
+
+        if (server.guardian?.backupId) {
+          try {
+            displayConfig = stripGuardianMetadata(db.readServerConfigFromBackup(server.guardian.backupId));
+          } catch (error) {
+            parseWarnings.push(
+              `Unable to read registered backup ${server.guardian.backupId}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
+
+        const enriched = {
           ...server,
+          displayConfig,
+          transport: detectTransport(displayConfig),
+          parseWarnings,
+        };
+        const risk = classifyServer(enriched);
+        summaries.push({
+          ...enriched,
           risk,
-          redactedConfig: redactDeep(server.displayConfig),
-          inferredTools: inferToolsForServer(server, risk),
+          redactedConfig: redactDeep(displayConfig),
+          inferredTools: inferToolsForServer(enriched, risk),
         });
       }
     } catch (error) {

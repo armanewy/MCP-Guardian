@@ -75,7 +75,7 @@ function statCounts(snapshot: DashboardSnapshot): Record<RiskLevel, number> {
 
 function policyForTool(policies: PolicyRecord[], tool: ToolInventoryItem): PolicyRecord | undefined {
   return policies.find(
-    (policy) => policy.serverName === tool.serverName && policy.toolName === tool.toolName,
+    (policy) => policy.serverId === tool.serverId && policy.toolName === tool.toolName,
   );
 }
 
@@ -424,12 +424,13 @@ function ToolPolicySelect({
 }: {
   tool: ToolInventoryItem;
   policies: PolicyRecord[];
-  onSet: (serverName: string, toolName: string, action: PolicyAction) => void;
-  onDelete: (serverName: string, toolName: string) => void;
+  onSet: (serverId: string, toolName: string, action: PolicyAction) => void;
+  onDelete: (serverId: string, toolName: string) => void;
 }): ReactElement {
   const exact = policyForTool(policies, tool);
   const evaluation = evaluatePolicy({
     policies,
+    serverId: tool.serverId,
     serverName: tool.serverName,
     toolName: tool.toolName,
     risk: tool.risk,
@@ -442,9 +443,9 @@ function ToolPolicySelect({
       onChange={(event) => {
         const value = event.target.value as PolicyAction | '';
         if (value) {
-          onSet(tool.serverName, tool.toolName, value);
+          onSet(tool.serverId, tool.toolName, value);
         } else {
-          onDelete(tool.serverName, tool.toolName);
+          onDelete(tool.serverId, tool.toolName);
         }
       }}
       title={evaluation.reason}
@@ -463,8 +464,8 @@ function ToolsView({
   onDeletePolicy,
 }: {
   snapshot: DashboardSnapshot;
-  onSetPolicy: (serverName: string, toolName: string, action: PolicyAction) => void;
-  onDeletePolicy: (serverName: string, toolName: string) => void;
+  onSetPolicy: (serverId: string, toolName: string, action: PolicyAction) => void;
+  onDeletePolicy: (serverId: string, toolName: string) => void;
 }): ReactElement {
   return (
     <div className="panel">
@@ -480,7 +481,7 @@ function ToolsView({
           <span>Policy</span>
         </div>
         {snapshot.tools.map((tool) => (
-          <div className="table-row" key={`${tool.serverName}/${tool.toolName}`}>
+          <div className="table-row" key={`${tool.serverId}/${tool.toolName}`}>
             <span>{tool.serverName}</span>
             <span>
               <strong>{tool.toolName}</strong>
@@ -507,13 +508,16 @@ function PoliciesView({
   onDeletePolicy,
 }: {
   snapshot: DashboardSnapshot;
-  onSetPolicy: (serverName: string, toolName: string, action: PolicyAction) => void;
-  onDeletePolicy: (serverName: string, toolName: string) => void;
+  onSetPolicy: (serverId: string, toolName: string, action: PolicyAction) => void;
+  onDeletePolicy: (serverId: string, toolName: string) => void;
 }): ReactElement {
-  const [serverName, setServerName] = useState('*');
+  const [serverId, setServerId] = useState('*');
   const [toolName, setToolName] = useState('*');
   const [action, setAction] = useState<PolicyAction>('ask');
-  const serverOptions = ['*', ...snapshot.servers.map((server) => server.name)];
+  const serverOptions = [
+    { serverId: '*', serverName: 'All servers' },
+    ...snapshot.servers.map((server) => ({ serverId: server.serverId, serverName: server.name })),
+  ];
 
   return (
     <div className="view-stack">
@@ -524,10 +528,10 @@ function PoliciesView({
         <div className="policy-form">
           <label>
             Server
-            <select value={serverName} onChange={(event) => setServerName(event.target.value)}>
-              {serverOptions.map((name) => (
-                <option key={name} value={name}>
-                  {name}
+            <select value={serverId} onChange={(event) => setServerId(event.target.value)}>
+              {serverOptions.map((option) => (
+                <option key={option.serverId} value={option.serverId}>
+                  {option.serverName}
                 </option>
               ))}
             </select>
@@ -548,7 +552,7 @@ function PoliciesView({
               </button>
             ))}
           </div>
-          <button className="primary-button" type="button" onClick={() => onSetPolicy(serverName, toolName || '*', action)}>
+          <button className="primary-button" type="button" onClick={() => onSetPolicy(serverId, toolName || '*', action)}>
             <Check size={16} />
             Save
           </button>
@@ -568,13 +572,13 @@ function PoliciesView({
             <span></span>
           </div>
           {snapshot.policies.map((policy) => (
-            <div className="table-row" key={`${policy.serverName}/${policy.toolName}`}>
-              <span>{policy.serverName}</span>
+            <div className="table-row" key={`${policy.serverId}/${policy.toolName}`}>
+              <span>{policy.serverId === '*' ? 'All servers' : policy.serverName ?? policy.serverId.slice(0, 12)}</span>
               <span>{policy.toolName}</span>
               <span className={`policy-action ${policy.action}`}>{policy.action}</span>
               <span>{formatDate(policy.updatedAt)}</span>
               <span>
-                <IconButton label="Delete policy" onClick={() => onDeletePolicy(policy.serverName, policy.toolName)}>
+                <IconButton label="Delete policy" onClick={() => onDeletePolicy(policy.serverId, policy.toolName)}>
                   <X size={16} />
                 </IconButton>
               </span>
@@ -690,12 +694,12 @@ export function App(): ReactElement {
     [selectedServerId, snapshot],
   );
 
-  const setPolicy = async (serverName: string, toolName: string, action: PolicyAction): Promise<void> => {
-    setSnapshot(await window.guardian.setPolicy({ serverName, toolName, action }));
+  const setPolicy = async (serverId: string, toolName: string, action: PolicyAction): Promise<void> => {
+    setSnapshot(await window.guardian.setPolicy({ serverId, toolName, action }));
   };
 
-  const deletePolicy = async (serverName: string, toolName: string): Promise<void> => {
-    setSnapshot(await window.guardian.deletePolicy({ serverName, toolName }));
+  const deletePolicy = async (serverId: string, toolName: string): Promise<void> => {
+    setSnapshot(await window.guardian.deletePolicy({ serverId, toolName }));
   };
 
   const applyMode = async (server: ServerSummary, mode: ServerMode): Promise<void> => {
@@ -704,9 +708,7 @@ export function App(): ReactElement {
     setNotice(undefined);
     try {
       const response = await window.guardian.applyMode({
-        sourcePath: server.source.path,
-        serverName: server.name,
-        configRootKey: server.configRootKey,
+        serverId: server.serverId,
         mode,
       });
       setSnapshot(response.snapshot);

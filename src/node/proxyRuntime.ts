@@ -2,24 +2,18 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  McpError,
-  type CallToolRequest,
-} from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import { GuardianDatabase } from './database';
 import { evaluatePolicy, filterVisibleTools } from '../shared/policy';
 import { classifyTool } from '../shared/risk';
-import type { PolicyEvaluation, ToolInventoryItem } from '../shared/types';
+import { stripGuardianMetadata } from '../shared/identity';
+import type { McpServerDefinition, PolicyEvaluation, ToolInventoryItem } from '../shared/types';
 
 export interface ProxyRuntimeOptions {
+  serverId: string;
   serverName: string;
-  sourcePath?: string;
+  backupId?: string;
   dbPath: string;
-  upstreamCommand: string;
-  upstreamArgs: string[];
   approvalTimeoutMs?: number;
 }
 
@@ -33,8 +27,16 @@ function processEnv(): Record<string, string> {
   return env;
 }
 
+function loadUpstreamConfig(db: GuardianDatabase, serverId: string, backupId?: string): McpServerDefinition {
+  if (backupId) {
+    return stripGuardianMetadata(db.readServerConfigFromBackup(backupId));
+  }
+  return stripGuardianMetadata(db.readLatestServerConfig(serverId).config);
+}
+
 async function enforcePolicy(input: {
   db: GuardianDatabase;
+  serverId: string;
   serverName: string;
   toolName: string;
   risk: ToolInventoryItem['risk'];
@@ -43,6 +45,7 @@ async function enforcePolicy(input: {
 }): Promise<PolicyEvaluation> {
   const policy = evaluatePolicy({
     policies: input.db.listPolicies(),
+    serverId: input.serverId,
     serverName: input.serverName,
     toolName: input.toolName,
     risk: input.risk,
@@ -53,6 +56,7 @@ async function enforcePolicy(input: {
   }
 
   const approval = input.db.createPendingApproval({
+    serverId: input.serverId,
     serverName: input.serverName,
     toolName: input.toolName,
     risk: input.risk,
@@ -72,20 +76,116 @@ async function enforcePolicy(input: {
   };
 }
 
-export async function runProxyRuntime(options: ProxyRuntimeOptions): Promise<void> {
-  if (!options.upstreamCommand) {
-    throw new Error('Missing --upstream-command');
+function blockedResult(toolName: string, reason: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  return {
+    content: [{ type: 'text', text: `MCP Guardian blocked ${toolName}: ${reason}` }],
+    isError: true,
+  };
+}
+
+export async function guardedCallTool(input: {
+  db: GuardianDatabase;
+  serverId: string;
+  serverName: string;
+  sourcePath?: string;
+  request: CallToolRequest;
+  approvalTimeoutMs: number;
+  callUpstream: (params: CallToolRequest['params']) => Promise<unknown>;
+}): Promise<any> {
+  const toolName = input.request.params.name;
+  const toolRisk = classifyTool({
+    name: toolName,
+    inputSchema: input.request.params.arguments,
+  }).level;
+
+  const policy = await enforcePolicy({
+    db: input.db,
+    serverId: input.serverId,
+    serverName: input.serverName,
+    toolName,
+    risk: toolRisk,
+    args: input.request.params.arguments,
+    timeoutMs: input.approvalTimeoutMs,
+  });
+
+  if (policy.action === 'block') {
+    const result = blockedResult(toolName, policy.reason);
+    input.db.logAudit({
+      serverId: input.serverId,
+      serverName: input.serverName,
+      toolName,
+      action: 'tools/call',
+      decision: 'blocked',
+      risk: toolRisk,
+      request: input.request.params,
+      response: result,
+      error: policy.reason,
+      sourcePath: input.sourcePath,
+    });
+    return result;
   }
 
+  try {
+    const result = await input.callUpstream(input.request.params);
+    input.db.logAudit({
+      serverId: input.serverId,
+      serverName: input.serverName,
+      toolName,
+      action: 'tools/call',
+      decision: policy.source === 'exact' ? 'allowed-by-policy' : 'allowed',
+      risk: toolRisk,
+      request: input.request.params,
+      response: result,
+      sourcePath: input.sourcePath,
+    });
+    return result;
+  } catch (error) {
+    input.db.logAudit({
+      serverId: input.serverId,
+      serverName: input.serverName,
+      toolName,
+      action: 'tools/call',
+      decision: 'errored',
+      risk: toolRisk,
+      request: input.request.params,
+      error: error instanceof Error ? error.message : String(error),
+      sourcePath: input.sourcePath,
+    });
+    throw error;
+  }
+}
+
+export async function runProxyRuntime(options: ProxyRuntimeOptions): Promise<void> {
   const db = new GuardianDatabase(options.dbPath);
-  const upstreamTransport = new StdioClientTransport({
-    command: options.upstreamCommand,
-    args: options.upstreamArgs,
-    env: processEnv(),
-    stderr: 'inherit',
-  });
-  const upstreamClient = new Client({ name: 'mcp-guardian-proxy-client', version: '0.1.0' });
-  await upstreamClient.connect(upstreamTransport);
+  let upstreamClient: Client | undefined;
+  let sourcePath: string | undefined;
+
+  async function getUpstreamClient(): Promise<Client> {
+    if (upstreamClient) {
+      return upstreamClient;
+    }
+
+    const backup = options.backupId ? db.getBackup(options.backupId) : db.getLatestBackupForServer(options.serverId);
+    sourcePath = backup?.sourcePath;
+    const upstreamConfig = loadUpstreamConfig(db, options.serverId, options.backupId);
+    if (!upstreamConfig.command) {
+      throw new Error(`No upstream command registered for ${options.serverName}`);
+    }
+
+    const transport = new StdioClientTransport({
+      command: upstreamConfig.command,
+      args: upstreamConfig.args ?? [],
+      cwd: upstreamConfig.cwd,
+      env: {
+        ...processEnv(),
+        ...(upstreamConfig.env ?? {}),
+      },
+      stderr: 'inherit',
+    });
+    upstreamClient = new Client({ name: 'mcp-guardian-proxy-client', version: '0.1.0' });
+    await upstreamClient.connect(transport);
+    return upstreamClient;
+  }
 
   const downstreamServer = new Server(
     { name: `mcp-guardian:${options.serverName}`, version: '0.1.0' },
@@ -93,10 +193,12 @@ export async function runProxyRuntime(options: ProxyRuntimeOptions): Promise<voi
   );
 
   downstreamServer.setRequestHandler(ListToolsRequestSchema, async (request) => {
-    const result = await upstreamClient.listTools(request.params);
+    const client = await getUpstreamClient();
+    const result = await client.listTools(request.params);
     const observedTools: ToolInventoryItem[] = result.tools.map((tool) => {
       const risk = classifyTool(tool).level;
       return {
+        serverId: options.serverId,
         serverName: options.serverName,
         toolName: tool.name,
         description: tool.description,
@@ -114,69 +216,43 @@ export async function runProxyRuntime(options: ProxyRuntimeOptions): Promise<voi
 
     const visible = filterVisibleTools(observedTools, db.listPolicies());
     const visibleNames = new Set(visible.map((tool) => tool.toolName));
+    const visibleTools = result.tools.filter((tool) => visibleNames.has(tool.name));
+    db.logAudit({
+      serverId: options.serverId,
+      serverName: options.serverName,
+      toolName: '*',
+      action: 'tools/list',
+      decision: 'listed',
+      risk: 'low',
+      request: request.params ?? {},
+      responseSummary: {
+        observedCount: result.tools.length,
+        visibleCount: visibleTools.length,
+        blockedCount: result.tools.length - visibleTools.length,
+      },
+      sourcePath,
+    });
+
     return {
       ...result,
-      tools: result.tools.filter((tool) => visibleNames.has(tool.name)),
+      tools: visibleTools,
     };
   });
 
-  downstreamServer.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
-    const toolName = request.params.name;
-    const toolRisk = classifyTool({
-      name: toolName,
-      inputSchema: request.params.arguments,
-    }).level;
-
-    const policy = await enforcePolicy({
+  downstreamServer.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) =>
+    guardedCallTool({
       db,
+      serverId: options.serverId,
       serverName: options.serverName,
-      toolName,
-      risk: toolRisk,
-      args: request.params.arguments,
-      timeoutMs: options.approvalTimeoutMs ?? 120_000,
-    });
-
-    if (policy.action === 'block') {
-      db.logAudit({
-        serverName: options.serverName,
-        toolName,
-        action: 'tools/call',
-        decision: 'blocked',
-        risk: toolRisk,
-        request: request.params,
-        error: policy.reason,
-        sourcePath: options.sourcePath,
-      });
-      throw new McpError(ErrorCode.InvalidRequest, `MCP Guardian blocked ${toolName}: ${policy.reason}`);
-    }
-
-    try {
-      const result = await upstreamClient.callTool(request.params);
-      db.logAudit({
-        serverName: options.serverName,
-        toolName,
-        action: 'tools/call',
-        decision: policy.source === 'exact' ? 'allowed-by-policy' : 'allowed',
-        risk: toolRisk,
-        request: request.params,
-        response: result,
-        sourcePath: options.sourcePath,
-      });
-      return result;
-    } catch (error) {
-      db.logAudit({
-        serverName: options.serverName,
-        toolName,
-        action: 'tools/call',
-        decision: 'errored',
-        risk: toolRisk,
-        request: request.params,
-        error: error instanceof Error ? error.message : String(error),
-        sourcePath: options.sourcePath,
-      });
-      throw error;
-    }
-  });
+      sourcePath,
+      request,
+      approvalTimeoutMs: options.approvalTimeoutMs ?? 120_000,
+      callUpstream: async (params) => {
+        const client = await getUpstreamClient();
+        return client.callTool(params);
+      },
+    }),
+  );
 
   await downstreamServer.connect(new StdioServerTransport());
 }
@@ -188,12 +264,9 @@ export async function runDisabledServer(serverName: string): Promise<void> {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [] }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    throw new McpError(
-      ErrorCode.InvalidRequest,
-      `MCP Guardian disabled ${serverName}; blocked ${request.params.name}`,
-    );
-  });
+  server.setRequestHandler(CallToolRequestSchema, async (request) =>
+    blockedResult(request.params.name, `${serverName} is disabled`),
+  );
 
   await server.connect(new StdioServerTransport());
 }

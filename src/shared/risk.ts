@@ -208,6 +208,7 @@ export function inferToolsForServer(server: ParsedMcpServer, risk: ServerRiskAss
   function push(toolName: string, description: string): void {
     const assessment = classifyTool({ name: toolName, description });
     tools.push({
+      serverId: server.serverId,
       serverName: server.name,
       toolName,
       description,

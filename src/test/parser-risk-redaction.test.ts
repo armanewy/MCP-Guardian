@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createServerId, fingerprintServerConfig } from '../shared/identity';
 import { parseMcpConfig } from '../shared/parser';
 import { classifyServer, classifyTool } from '../shared/risk';
 import { hasSecretMaterial, redactDeep } from '../shared/redaction';
@@ -12,7 +13,7 @@ const source = {
 };
 
 describe('config parser', () => {
-  it('parses Claude Desktop mcpServers entries', () => {
+  it('parses Claude Desktop entries with stable serverId', () => {
     const parsed = parseMcpConfig(
       source,
       JSON.stringify({
@@ -26,27 +27,37 @@ describe('config parser', () => {
       }),
     );
 
+    const expectedId = createServerId({
+      sourcePath: source.path,
+      configRootKey: 'mcpServers',
+      serverName: 'filesystem',
+    });
+
     expect(parsed.servers).toHaveLength(1);
+    expect(parsed.servers[0].serverId).toBe(expectedId);
+    expect(parsed.servers[0].id).toBe(expectedId);
     expect(parsed.servers[0].name).toBe('filesystem');
     expect(parsed.servers[0].transport).toBe('stdio');
     expect(parsed.servers[0].mode).toBe('active');
   });
 
-  it('uses guardian original config for protected servers', () => {
+  it('parses hardened guardian metadata without embedded original config', () => {
+    const originalFingerprint = fingerprintServerConfig({
+      command: 'npx',
+      args: ['--flag'],
+    });
     const parsed = parseMcpConfig(
       source,
       JSON.stringify({
         mcpServers: {
           filesystem: {
             command: 'node',
-            args: ['proxy.js'],
+            args: ['proxy.js', '--server-id', 'abc'],
             mcpGuardian: {
               mode: 'protected',
+              backupId: 'backup-1',
+              originalFingerprint,
               updatedAt: new Date().toISOString(),
-              original: {
-                command: 'npx',
-                args: ['-y', '@modelcontextprotocol/server-filesystem', '/'],
-              },
             },
           },
         },
@@ -54,7 +65,9 @@ describe('config parser', () => {
     );
 
     expect(parsed.servers[0].mode).toBe('protected');
-    expect(parsed.servers[0].displayConfig.command).toBe('npx');
+    expect(parsed.servers[0].guardian?.backupId).toBe('backup-1');
+    expect(parsed.servers[0].guardian).not.toHaveProperty('original');
+    expect(parsed.servers[0].originalFingerprint).toBe(originalFingerprint);
   });
 });
 

@@ -4,12 +4,13 @@ const SENSITIVE_LEVELS = new Set<RiskLevel>(['high', 'critical']);
 
 export function evaluatePolicy(input: {
   policies: PolicyRecord[];
+  serverId: string;
   serverName: string;
   toolName: string;
   risk: RiskLevel;
 }): PolicyEvaluation {
   const exact = input.policies.find(
-    (policy) => policy.serverName === input.serverName && policy.toolName === input.toolName,
+    (policy) => policy.serverId === input.serverId && policy.toolName === input.toolName,
   );
   if (exact) {
     return {
@@ -20,7 +21,7 @@ export function evaluatePolicy(input: {
   }
 
   const serverDefault = input.policies.find(
-    (policy) => policy.serverName === input.serverName && policy.toolName === '*',
+    (policy) => policy.serverId === input.serverId && policy.toolName === '*',
   );
   if (serverDefault) {
     return {
@@ -31,7 +32,7 @@ export function evaluatePolicy(input: {
   }
 
   const globalDefault = input.policies.find(
-    (policy) => policy.serverName === '*' && policy.toolName === '*',
+    (policy) => policy.serverId === '*' && policy.toolName === '*',
   );
   if (globalDefault) {
     return {
@@ -61,6 +62,7 @@ export function filterVisibleTools(
   return tools.filter((tool) => {
     const policy = evaluatePolicy({
       policies,
+      serverId: tool.serverId,
       serverName: tool.serverName,
       toolName: tool.toolName,
       risk: tool.risk,

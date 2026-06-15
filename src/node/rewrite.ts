@@ -7,10 +7,8 @@ import type {
   RewriteResult,
   ServerMode,
 } from '../shared/types';
-
-function timestamp(): string {
-  return new Date().toISOString().replace(/[:.]/g, '-');
-}
+import { fingerprintServerConfig, stripGuardianMetadata } from '../shared/identity';
+import { GuardianDatabase } from './database';
 
 function getRoot(json: any, rootKey: string): Record<string, any> {
   if (rootKey === 'mcpServers') return json.mcpServers;
@@ -19,61 +17,119 @@ function getRoot(json: any, rootKey: string): Record<string, any> {
   throw new Error(`Unsupported config root: ${rootKey}`);
 }
 
-function backupFile(sourcePath: string): string {
-  const backupPath = `${sourcePath}.mcp-guardian-backup-${timestamp()}`;
-  fs.copyFileSync(sourcePath, backupPath);
-  return backupPath;
+function atomicWriteJson(filePath: string, json: unknown): void {
+  const dir = path.dirname(filePath);
+  const tempPath = path.join(dir, `.${path.basename(filePath)}.mcp-guardian-${process.pid}-${Date.now()}.tmp`);
+  const content = `${JSON.stringify(json, null, 2)}\n`;
+  const fd = fs.openSync(tempPath, 'wx');
+
+  try {
+    fs.writeFileSync(fd, content, 'utf8');
+    try {
+      fs.fsyncSync(fd);
+    } catch {
+      // Some virtual filesystems do not support fsync. The temp+rename path still avoids torn JSON.
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  fs.renameSync(tempPath, filePath);
 }
 
-function originalFor(entry: McpServerDefinition & { mcpGuardian?: GuardianMetadata }): McpServerDefinition {
-  return entry.mcpGuardian?.original ?? {
-    ...entry,
-    mcpGuardian: undefined,
+function readJsonConfig(sourcePath: string): { raw: string; json: any } {
+  const raw = fs.readFileSync(sourcePath, 'utf8');
+  return { raw, json: JSON.parse(raw) };
+}
+
+function existingGuardian(entry: McpServerDefinition & { mcpGuardian?: GuardianMetadata }): GuardianMetadata | undefined {
+  return entry.mcpGuardian;
+}
+
+function metadataFor(input: {
+  mode: Exclude<ServerMode, 'active'>;
+  backupId: string;
+  originalFingerprint: string;
+}): GuardianMetadata {
+  return {
+    mode: input.mode,
+    backupId: input.backupId,
+    originalFingerprint: input.originalFingerprint,
+    updatedAt: new Date().toISOString(),
+    note:
+      input.mode === 'protected'
+        ? 'Protected by MCP Guardian stdio proxy. Startup side effects are not sandboxed.'
+        : 'Disabled by MCP Guardian. Restore from the app to re-enable the original server.',
   };
-}
-
-function stripGuardian(entry: McpServerDefinition): McpServerDefinition {
-  const copy = { ...entry };
-  delete copy.mcpGuardian;
-  return copy;
 }
 
 function proxyArgs(input: {
   launch: RewriteLaunchConfig;
+  serverId: string;
   serverName: string;
-  sourcePath: string;
   dbPath: string;
-  original: McpServerDefinition;
+  backupId: string;
 }): string[] {
-  const args = [
+  return [
     ...input.launch.proxy.args,
+    '--server-id',
+    input.serverId,
     '--server-name',
     input.serverName,
-    '--source-path',
-    input.sourcePath,
     '--db-path',
     input.dbPath,
-    '--upstream-command',
-    input.original.command ?? '',
+    '--backup-id',
+    input.backupId,
   ];
+}
 
-  for (const arg of input.original.args ?? []) {
-    args.push('--upstream-arg', arg);
+function disabledArgs(input: { launch: RewriteLaunchConfig; serverId: string; serverName: string }): string[] {
+  return [
+    ...input.launch.disabled.args,
+    '--server-id',
+    input.serverId,
+    '--server-name',
+    input.serverName,
+  ];
+}
+
+function resolveOriginal(input: {
+  db: GuardianDatabase;
+  entry: McpServerDefinition & { mcpGuardian?: GuardianMetadata };
+}): { config: McpServerDefinition; backupId?: string; fingerprint: string } {
+  const guardian = existingGuardian(input.entry);
+  if (!guardian) {
+    const config = stripGuardianMetadata(input.entry);
+    return {
+      config,
+      fingerprint: fingerprintServerConfig(config),
+    };
   }
 
-  return args;
+  const config = stripGuardianMetadata(input.db.readServerConfigFromBackup(guardian.backupId));
+  const fingerprint = fingerprintServerConfig(config);
+  if (fingerprint !== guardian.originalFingerprint) {
+    throw new Error('Registered backup does not match the stored original fingerprint');
+  }
+
+  return {
+    config,
+    backupId: guardian.backupId,
+    fingerprint,
+  };
 }
 
 export function rewriteServerMode(input: {
   sourcePath: string;
+  serverId: string;
   serverName: string;
   configRootKey: string;
   mode: ServerMode;
+  expectedOriginalFingerprint: string;
   launch: RewriteLaunchConfig;
-  dbPath: string;
+  db: GuardianDatabase;
 }): RewriteResult {
-  const raw = fs.readFileSync(input.sourcePath, 'utf8');
-  const json = JSON.parse(raw);
+  const { raw, json } = readJsonConfig(input.sourcePath);
   const root = getRoot(json, input.configRootKey);
   const entry = root[input.serverName] as McpServerDefinition & { mcpGuardian?: GuardianMetadata };
 
@@ -81,26 +137,41 @@ export function rewriteServerMode(input: {
     throw new Error(`Server ${input.serverName} not found in ${path.basename(input.sourcePath)}`);
   }
 
-  const backupPath = backupFile(input.sourcePath);
-  const original = stripGuardian(originalFor(entry));
-  const updatedAt = new Date().toISOString();
+  const original = resolveOriginal({ db: input.db, entry });
+  if (original.fingerprint !== input.expectedOriginalFingerprint) {
+    throw new Error('Config changed since last scan; rescan before applying mode changes');
+  }
+
+  const safetyBackup = input.db.createBackup({
+    sourcePath: input.sourcePath,
+    serverId: input.serverId,
+    serverName: input.serverName,
+    configRootKey: input.configRootKey,
+    content: raw,
+  });
+  const originalBackupId = original.backupId ?? safetyBackup.backupId;
 
   if (input.mode === 'active') {
-    root[input.serverName] = original;
+    if (!existingGuardian(entry)) {
+      throw new Error(`${input.serverName} is already active`);
+    }
+    root[input.serverName] = original.config;
   } else if (input.mode === 'disabled') {
     root[input.serverName] = {
       command: input.launch.disabled.command,
-      args: [...input.launch.disabled.args, '--server-name', input.serverName],
-      env: {},
-      mcpGuardian: {
+      args: disabledArgs({
+        launch: input.launch,
+        serverId: input.serverId,
+        serverName: input.serverName,
+      }),
+      mcpGuardian: metadataFor({
         mode: 'disabled',
-        original,
-        updatedAt,
-        note: 'Disabled by MCP Guardian. Restore from the app to re-enable the original server.',
-      },
+        backupId: originalBackupId,
+        originalFingerprint: original.fingerprint,
+      }),
     };
   } else {
-    if (!original.command) {
+    if (!original.config.command) {
       throw new Error('Protect mode only supports stdio servers with a command in v0.1');
     }
 
@@ -108,26 +179,27 @@ export function rewriteServerMode(input: {
       command: input.launch.proxy.command,
       args: proxyArgs({
         launch: input.launch,
+        serverId: input.serverId,
         serverName: input.serverName,
-        sourcePath: input.sourcePath,
-        dbPath: input.dbPath,
-        original,
+        dbPath: input.db.path,
+        backupId: originalBackupId,
       }),
-      env: original.env ?? {},
-      mcpGuardian: {
+      ...(original.config.env ? { env: original.config.env } : {}),
+      mcpGuardian: metadataFor({
         mode: 'protected',
-        original,
-        updatedAt,
-        note: 'Protected by MCP Guardian stdio proxy. Startup side effects are not sandboxed.',
-      },
+        backupId: originalBackupId,
+        originalFingerprint: original.fingerprint,
+      }),
     };
   }
 
-  fs.writeFileSync(input.sourcePath, `${JSON.stringify(json, null, 2)}\n`, 'utf8');
+  atomicWriteJson(input.sourcePath, json);
 
   return {
-    backupPath,
+    backupId: safetyBackup.backupId,
+    backupPath: safetyBackup.backupPath,
     sourcePath: input.sourcePath,
+    serverId: input.serverId,
     serverName: input.serverName,
     mode: input.mode,
   };

@@ -81,16 +81,24 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'guardian:set-policy',
-    async (_event, input: { serverName: string; toolName: string; action: PolicyAction }) => {
-      getDb().setPolicy(input.serverName, input.toolName, input.action);
+    async (_event, input: { serverId: string; toolName: string; action: PolicyAction }) => {
+      const snapshot = await scanDashboard(getDb());
+      const server = snapshot.servers.find((candidate) => candidate.serverId === input.serverId);
+      const serverName =
+        input.serverId === '*'
+          ? undefined
+          : server?.name ??
+            snapshot.tools.find((tool) => tool.serverId === input.serverId)?.serverName ??
+            undefined;
+      getDb().setPolicy(input.serverId, serverName, input.toolName, input.action);
       return scanDashboard(getDb());
     },
   );
 
   ipcMain.handle(
     'guardian:delete-policy',
-    async (_event, input: { serverName: string; toolName: string }) => {
-      getDb().deletePolicy(input.serverName, input.toolName);
+    async (_event, input: { serverId: string; toolName: string }) => {
+      getDb().deletePolicy(input.serverId, input.toolName);
       return scanDashboard(getDb());
     },
   );
@@ -108,19 +116,28 @@ function registerIpc(): void {
     async (
       _event,
       input: {
-        sourcePath: string;
-        serverName: string;
-        configRootKey: string;
+        serverId: string;
         mode: ServerMode;
       },
     ) => {
+      const snapshot = await scanDashboard(getDb());
+      const server = snapshot.servers.find((candidate) => candidate.serverId === input.serverId);
+      if (!server) {
+        throw new Error('Unknown or unavailable MCP server; rescan before applying mode changes');
+      }
+
       const result = rewriteServerMode({
-        ...input,
+        sourcePath: server.source.path,
+        serverId: server.serverId,
+        serverName: server.name,
+        configRootKey: server.configRootKey,
+        mode: input.mode,
+        expectedOriginalFingerprint: server.originalFingerprint,
         launch: {
           disabled: cliLaunch('disabled'),
           proxy: cliLaunch('proxy'),
         },
-        dbPath: getDb().path,
+        db: getDb(),
       });
       return {
         result,
