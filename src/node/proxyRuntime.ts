@@ -17,14 +17,27 @@ export interface ProxyRuntimeOptions {
   approvalTimeoutMs?: number;
 }
 
-function processEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
+const ALLOWED_UPSTREAM_ENV_KEYS = ['PATH', 'HOME', 'USERPROFILE', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR'];
+
+export function minimalBaseEnv(sourceEnv: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const key of ALLOWED_UPSTREAM_ENV_KEYS) {
+    const value = sourceEnv[key];
     if (typeof value === 'string') {
-      env[key] = value;
+      output[key] = value;
     }
   }
-  return env;
+  return output;
+}
+
+export function buildUpstreamEnv(
+  originalConfigEnv: Record<string, string> | undefined,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  return {
+    ...minimalBaseEnv(baseEnv),
+    ...(originalConfigEnv ?? {}),
+  };
 }
 
 function loadUpstreamConfig(db: GuardianDatabase, serverId: string, backupId?: string): McpServerDefinition {
@@ -66,14 +79,27 @@ async function enforcePolicy(input: {
   const result = await input.db.waitForApproval(approval.id, input.timeoutMs);
 
   if (result === 'approved') {
-    return { action: 'allow', source: 'exact', reason: `Approval ${approval.id} was approved` };
+    return { action: 'allow', source: 'approval-once', reason: `Approval ${approval.id} was approved` };
   }
 
   return {
     action: 'block',
-    source: 'risk-default',
+    source: result === 'denied' ? 'approval-denied' : 'approval-timeout',
     reason: result === 'denied' ? `Approval ${approval.id} was denied` : `Approval ${approval.id} expired`,
   };
+}
+
+function allowedDecision(policy: PolicyEvaluation): string {
+  if (policy.source === 'approval-once') return 'asked_allowed';
+  if (policy.source === 'risk-default') return 'allowed_by_default';
+  return 'allowed_by_policy';
+}
+
+function blockedDecision(policy: PolicyEvaluation): string {
+  if (policy.source === 'approval-denied') return 'asked_denied';
+  if (policy.source === 'approval-timeout') return 'timeout_denied';
+  if (policy.source === 'risk-default') return 'blocked_by_default';
+  return 'blocked_by_policy';
 }
 
 function blockedResult(toolName: string, reason: string): { content: Array<{ type: 'text'; text: string }>; isError: true } {
@@ -115,7 +141,7 @@ export async function guardedCallTool(input: {
       serverName: input.serverName,
       toolName,
       action: 'tools/call',
-      decision: 'blocked',
+      decision: blockedDecision(policy),
       risk: toolRisk,
       request: input.request.params,
       response: result,
@@ -132,7 +158,7 @@ export async function guardedCallTool(input: {
       serverName: input.serverName,
       toolName,
       action: 'tools/call',
-      decision: policy.source === 'exact' ? 'allowed-by-policy' : 'allowed',
+      decision: allowedDecision(policy),
       risk: toolRisk,
       request: input.request.params,
       response: result,
@@ -176,10 +202,7 @@ export async function runProxyRuntime(options: ProxyRuntimeOptions): Promise<voi
       command: upstreamConfig.command,
       args: upstreamConfig.args ?? [],
       cwd: upstreamConfig.cwd,
-      env: {
-        ...processEnv(),
-        ...(upstreamConfig.env ?? {}),
-      },
+      env: buildUpstreamEnv(upstreamConfig.env),
       stderr: 'inherit',
     });
     upstreamClient = new Client({ name: 'mcp-guardian-proxy-client', version: '0.1.0' });

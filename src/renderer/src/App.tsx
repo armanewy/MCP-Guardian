@@ -56,6 +56,22 @@ function formatDate(value?: string): string {
   }).format(new Date(value));
 }
 
+const DECISION_LABELS: Record<string, string> = {
+  asked_allowed: 'Allowed after approval',
+  asked_denied: 'Denied after approval prompt',
+  timeout_denied: 'Denied after timeout',
+  allowed_by_policy: 'Allowed by policy',
+  allowed_by_default: 'Allowed by default',
+  blocked_by_policy: 'Blocked by policy',
+  blocked_by_default: 'Blocked by default',
+  listed: 'Listed tools',
+  errored: 'Errored',
+};
+
+function decisionLabel(value: string): string {
+  return DECISION_LABELS[value] ?? value.replaceAll('_', ' ');
+}
+
 function sortedServers(snapshot: DashboardSnapshot): ServerSummary[] {
   return [...snapshot.servers].sort((left, right) => {
     const riskDelta = riskOrder[right.risk.level] - riskOrder[left.risk.level];
@@ -242,7 +258,7 @@ function DashboardView({
                 <span>{formatDate(audit.createdAt)}</span>
                 <strong>{audit.serverName}/{audit.toolName}</strong>
                 <RiskBadge risk={audit.risk} />
-                <em>{audit.decision}</em>
+                <em>{decisionLabel(audit.decision)}</em>
               </div>
             ))}
             {recent.length === 0 ? <div className="empty-state">No tool calls logged yet.</div> : null}
@@ -652,7 +668,7 @@ function AuditView({ snapshot }: { snapshot: DashboardSnapshot }): ReactElement 
             <span>{formatDate(audit.createdAt)}</span>
             <span>{audit.serverName}</span>
             <span>{audit.toolName}</span>
-            <span>{audit.decision}</span>
+            <span>{decisionLabel(audit.decision)}</span>
             <span>
               <RiskBadge risk={audit.risk} />
             </span>

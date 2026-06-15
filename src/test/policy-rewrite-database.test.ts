@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { GuardianDatabase } from '../node/database';
-import { guardedCallTool } from '../node/proxyRuntime';
+import { buildUpstreamEnv, guardedCallTool } from '../node/proxyRuntime';
 import { rewriteServerMode } from '../node/rewrite';
 import { createServerId, fingerprintServerConfig } from '../shared/identity';
 import { evaluatePolicy, filterVisibleTools } from '../shared/policy';
@@ -128,6 +128,30 @@ describe('config rewrite', () => {
     fixture.db.close();
   });
 
+  it('writes backup files that are not world-readable on POSIX', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+
+    const fixture = setupRewriteFixture();
+    const result = rewriteServerMode({
+      sourcePath: fixture.configPath,
+      serverId: fixture.serverId,
+      serverName: 'filesystem',
+      configRootKey: 'mcpServers',
+      mode: 'disabled',
+      expectedOriginalFingerprint: fingerprintServerConfig(fixture.original),
+      launch: fixture.launch,
+      db: fixture.db,
+    });
+
+    const backupMode = fs.statSync(result.backupPath).mode & 0o777;
+    const backupDirMode = fs.statSync(path.dirname(result.backupPath)).mode & 0o777;
+    expect(backupMode & 0o077).toBe(0);
+    expect(backupDirMode & 0o077).toBe(0);
+    fixture.db.close();
+  });
+
   it('preserves upstream args beginning with "--" through backup lookup', () => {
     const fixture = setupRewriteFixture();
     rewriteServerMode({
@@ -202,7 +226,7 @@ describe('config rewrite', () => {
 });
 
 describe('sqlite audit logging', () => {
-  it('redacts secrets before writing capped audit rows', () => {
+  it('uses minimal request logging by default without value previews', () => {
     const dir = tempDir();
     const db = new GuardianDatabase(path.join(dir, 'guardian.sqlite'));
     db.logAudit({
@@ -212,7 +236,36 @@ describe('sqlite audit logging', () => {
       action: 'tools/call',
       decision: 'allowed',
       risk: 'medium',
-      request: { API_KEY: 'abc123' },
+      request: {
+        name: 'read_file',
+        arguments: {
+          path: '/tmp/private.txt',
+          privateText: `VERY_PRIVATE_${'x'.repeat(600)}`,
+        },
+      },
+    });
+
+    const [entry] = db.listAuditLogs();
+    expect(entry.requestJson).toContain('"detailLevel": "minimal"');
+    expect(entry.requestJson).toContain('"privateText"');
+    expect(entry.requestJson).toContain('"byteLengthEstimate"');
+    expect(entry.requestJson).not.toContain('VERY_PRIVATE');
+    expect(entry.requestJson).not.toContain('/tmp/private.txt');
+    db.close();
+  });
+
+  it('supports opt-in redacted request previews', () => {
+    const dir = tempDir();
+    const db = new GuardianDatabase(path.join(dir, 'guardian.sqlite'));
+    db.setAuditDetailLevel('redacted-preview');
+    db.logAudit({
+      serverId: 'server-a',
+      serverName: 'fs',
+      toolName: 'read_file',
+      action: 'tools/call',
+      decision: 'allowed',
+      risk: 'medium',
+      request: { name: 'read_file', arguments: { API_KEY: 'abc123' } },
     });
 
     const [entry] = db.listAuditLogs();
@@ -248,6 +301,25 @@ describe('sqlite audit logging', () => {
 });
 
 describe('proxy policy behavior', () => {
+  it('does not pass Guardian process secrets upstream unless explicit in original env', () => {
+    const baseEnv = {
+      PATH: '/usr/bin',
+      HOME: '/home/user',
+      MCP_GUARDIAN_TEST_SECRET: 'do-not-pass',
+    };
+
+    expect(buildUpstreamEnv(undefined, baseEnv)).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/user',
+    });
+    expect(
+      buildUpstreamEnv(
+        { MCP_GUARDIAN_TEST_SECRET: 'explicit-pass' },
+        baseEnv,
+      ).MCP_GUARDIAN_TEST_SECRET,
+    ).toBe('explicit-pass');
+  });
+
   it('hides blocked tools from tools/list results by serverId', () => {
     const tools: ToolInventoryItem[] = [
       { serverId: 'server-a', serverName: 'fs', toolName: 'read_file', risk: 'medium', source: 'actual' },
@@ -287,7 +359,7 @@ describe('proxy policy behavior', () => {
 
     expect(forwarded).toBe(false);
     expect(result).toMatchObject({ isError: true });
-    expect(db.listAuditLogs()[0].decision).toBe('blocked');
+    expect(db.listAuditLogs()[0].decision).toBe('blocked_by_policy');
     db.close();
   });
 });

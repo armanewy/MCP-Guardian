@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createServerId, fingerprintServerConfig } from '../shared/identity';
+import { createServerId, fingerprintServerConfig, normalizeSourcePath } from '../shared/identity';
 import { parseMcpConfig } from '../shared/parser';
 import { classifyServer, classifyTool } from '../shared/risk';
 import { hasSecretMaterial, redactDeep } from '../shared/redaction';
@@ -39,6 +39,26 @@ describe('config parser', () => {
     expect(parsed.servers[0].name).toBe('filesystem');
     expect(parsed.servers[0].transport).toBe('stdio');
     expect(parsed.servers[0].mode).toBe('active');
+  });
+
+  it('normalizes Windows source paths for stable server identity', () => {
+    const first = createServerId({
+      sourcePath: 'C:\\Users\\A\\.cursor\\mcp.json',
+      configRootKey: 'mcpServers',
+      serverName: 'filesystem',
+      platform: 'win32',
+    });
+    const second = createServerId({
+      sourcePath: 'c:/users/a/.cursor/mcp.json',
+      configRootKey: 'mcpServers',
+      serverName: 'filesystem',
+      platform: 'win32',
+    });
+
+    expect(first).toBe(second);
+    expect(normalizeSourcePath('C:\\Users\\A\\.cursor\\mcp.json', 'win32')).toBe(
+      'c:/users/a/.cursor/mcp.json',
+    );
   });
 
   it('parses hardened guardian metadata without embedded original config', () => {

@@ -8,6 +8,8 @@ export type PolicyAction = 'allow' | 'ask' | 'block';
 
 export type ToolInventorySource = 'actual' | 'inferred';
 
+export type AuditDetailLevel = 'minimal' | 'redacted-preview';
+
 export interface ClientConfigSource {
   id: string;
   client: string;
@@ -97,7 +99,14 @@ export interface PolicyRecord {
 
 export interface PolicyEvaluation {
   action: PolicyAction;
-  source: 'exact' | 'server-default' | 'global-default' | 'risk-default';
+  source:
+    | 'approval-once'
+    | 'approval-denied'
+    | 'approval-timeout'
+    | 'exact'
+    | 'server-default'
+    | 'global-default'
+    | 'risk-default';
   reason: string;
 }
 
@@ -133,6 +142,7 @@ export interface DashboardSnapshot {
   generatedAt: string;
   guardianHome: string;
   dbPath: string;
+  auditDetailLevel: AuditDetailLevel;
   sources: ClientConfigSource[];
   servers: ServerSummary[];
   tools: ToolInventoryItem[];

@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import type {
   AuditLogRecord,
   BackupRecord,
+  AuditDetailLevel,
   McpServerDefinition,
   PendingApprovalRecord,
   PolicyAction,
@@ -19,8 +20,9 @@ import { sha256Hex } from '../shared/identity';
 
 type SqliteDatabase = Database.Database;
 
-const REQUEST_LOG_LIMIT = 4_000;
 const RESPONSE_PREVIEW_LIMIT = 200;
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 
 export function getDefaultGuardianHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.MCP_GUARDIAN_HOME || path.join(os.homedir(), '.mcp-guardian');
@@ -34,12 +36,21 @@ export function getDefaultBackupDir(env: NodeJS.ProcessEnv = process.env): strin
   return path.join(getDefaultGuardianHome(env), 'backups');
 }
 
-function ensureParentDir(filePath: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+function chmodIfSupported(targetPath: string, mode: number): void {
+  try {
+    fs.chmodSync(targetPath, mode);
+  } catch {
+    // chmod is not consistently meaningful on Windows and some virtual filesystems.
+  }
 }
 
-function ensureDir(dirPath: string): void {
-  fs.mkdirSync(dirPath, { recursive: true });
+function ensurePrivateDir(dirPath: string): void {
+  fs.mkdirSync(dirPath, { recursive: true, mode: PRIVATE_DIR_MODE });
+  chmodIfSupported(dirPath, PRIVATE_DIR_MODE);
+}
+
+function ensurePrivateParentDir(filePath: string): void {
+  ensurePrivateDir(path.dirname(filePath));
 }
 
 function nowIso(): string {
@@ -60,7 +71,7 @@ function getRoot(json: any, rootKey: string): Record<string, unknown> {
   throw new Error(`Unsupported config root: ${rootKey}`);
 }
 
-function cappedRedactedJson(value: unknown, limit = REQUEST_LOG_LIMIT): string {
+function cappedRedactedJson(value: unknown, limit = 4_000): string {
   const redacted = redactDeep(value);
   const json = JSON.stringify(redacted, null, 2);
   if (json.length <= limit) {
@@ -76,6 +87,32 @@ function cappedRedactedJson(value: unknown, limit = REQUEST_LOG_LIMIT): string {
     null,
     2,
   );
+}
+
+function objectKeys(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return [];
+  }
+  return Object.keys(value as Record<string, unknown>).sort();
+}
+
+function summarizeRequestMinimal(value: unknown): string {
+  const serialized = JSON.stringify(redactDeep(value));
+  const request = value as { arguments?: unknown; name?: unknown } | undefined;
+  return JSON.stringify(
+    {
+      detailLevel: 'minimal',
+      byteLengthEstimate: Buffer.byteLength(serialized, 'utf8'),
+      toolName: typeof request?.name === 'string' ? request.name : undefined,
+      argKeys: objectKeys(request?.arguments),
+    },
+    null,
+    2,
+  );
+}
+
+function coerceAuditDetailLevel(value: string | undefined): AuditDetailLevel {
+  return value === 'redacted-preview' ? 'redacted-preview' : 'minimal';
 }
 
 export function summarizeToolResponse(response: unknown): Record<string, unknown> {
@@ -110,8 +147,8 @@ export class GuardianDatabase {
   constructor(dbPath = getDefaultDatabasePath()) {
     this.path = dbPath;
     this.backupDir = path.join(path.dirname(dbPath), 'backups');
-    ensureParentDir(dbPath);
-    ensureDir(this.backupDir);
+    ensurePrivateParentDir(dbPath);
+    ensurePrivateDir(this.backupDir);
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.migrate();
@@ -183,6 +220,12 @@ export class GuardianDatabase {
         sha256 TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
 
     ensureColumn(this.db, 'policies', 'server_id', "server_id TEXT NOT NULL DEFAULT ''");
@@ -204,6 +247,25 @@ export class GuardianDatabase {
     this.db.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_inventory_server_tool ON tool_inventory(server_id, tool_name)',
     );
+  }
+
+  getAuditDetailLevel(): AuditDetailLevel {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = 'auditDetailLevel'").get() as
+      | { value: string }
+      | undefined;
+    return coerceAuditDetailLevel(row?.value);
+  }
+
+  setAuditDetailLevel(level: AuditDetailLevel): void {
+    this.db
+      .prepare(
+        `
+        INSERT INTO settings (key, value, updated_at)
+        VALUES ('auditDetailLevel', @level, @updatedAt)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `,
+      )
+      .run({ level, updatedAt: nowIso() });
   }
 
   listPolicies(): PolicyRecord[] {
@@ -320,7 +382,18 @@ export class GuardianDatabase {
     const backupPath = path.join(this.backupDir, `${backupId}.json`);
     const sha256 = sha256Hex(input.content);
 
-    fs.writeFileSync(backupPath, input.content, { encoding: 'utf8', flag: 'wx' });
+    const fd = fs.openSync(backupPath, 'wx', PRIVATE_FILE_MODE);
+    try {
+      fs.writeFileSync(fd, input.content, 'utf8');
+      try {
+        fs.fsyncSync(fd);
+      } catch {
+        // Backup still exists with restrictive mode; fsync support varies by filesystem.
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    chmodIfSupported(backupPath, PRIVATE_FILE_MODE);
     this.db
       .prepare(
         `
@@ -477,7 +550,12 @@ export class GuardianDatabase {
         action: input.action,
         decision: input.decision,
         risk: input.risk,
-        requestJson: input.request === undefined ? null : cappedRedactedJson(input.request),
+        requestJson:
+          input.request === undefined
+            ? null
+            : this.getAuditDetailLevel() === 'redacted-preview'
+              ? cappedRedactedJson(input.request)
+              : summarizeRequestMinimal(input.request),
         responseSummaryJson: responseSummary === undefined ? null : cappedRedactedJson(responseSummary, 1_000),
         error: input.error ?? null,
         sourcePath: input.sourcePath ?? null,

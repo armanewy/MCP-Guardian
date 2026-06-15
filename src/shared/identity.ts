@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import type { McpServerDefinition } from './types';
 
 export function sha256Hex(value: string | Buffer): string {
@@ -9,8 +10,22 @@ export function createServerId(input: {
   sourcePath: string;
   configRootKey: string;
   serverName: string;
+  platform?: NodeJS.Platform;
 }): string {
-  return sha256Hex(`${input.sourcePath}::${input.configRootKey}::${input.serverName}`);
+  return sha256Hex(
+    `${normalizeSourcePath(input.sourcePath, input.platform)}::${input.configRootKey}::${input.serverName}`,
+  );
+}
+
+export function normalizeSourcePath(sourcePath: string, platform: NodeJS.Platform = process.platform): string {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  let normalized = pathApi.resolve(sourcePath).replace(/\\/g, '/');
+
+  if (platform === 'win32') {
+    normalized = normalized.toLowerCase();
+  }
+
+  return normalized;
 }
 
 function normalize(value: unknown): unknown {

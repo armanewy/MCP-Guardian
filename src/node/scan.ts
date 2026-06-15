@@ -93,6 +93,7 @@ export async function scanDashboard(db = new GuardianDatabase()): Promise<Dashbo
     generatedAt: new Date().toISOString(),
     guardianHome: getDefaultGuardianHome(),
     dbPath: getDefaultDatabasePath(),
+    auditDetailLevel: db.getAuditDetailLevel(),
     sources,
     servers: summaries.sort((left, right) => left.name.localeCompare(right.name)),
     tools,
