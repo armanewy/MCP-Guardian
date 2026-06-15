@@ -1,0 +1,51 @@
+{
+  "name": "mcp-guardian",
+  "version": "0.1.0",
+  "description": "Local-first dashboard for MCP server permissions, policies, and audit logs.",
+  "type": "module",
+  "main": "out/main/index.js",
+  "bin": {
+    "mcp-guardian-proxy": "out/cli/proxy.js",
+    "mcp-guardian-disabled": "out/cli/disabled.js"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build && node scripts/build-cli.mjs",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.cli.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "proxy": "tsx src/cli/proxy.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "better-sqlite3": "latest",
+    "electron-store": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@electron-toolkit/preload": "latest",
+    "@types/better-sqlite3": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "latest",
+    "electron-vite": "latest",
+    "esbuild": "latest",
+    "eslint": "latest",
+    "globals": "latest",
+    "prettier": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "typescript-eslint": "latest",
+    "vite": "^7.3.5",
+    "vitest": "latest"
+  }
+}
